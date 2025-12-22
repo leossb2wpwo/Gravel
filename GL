@@ -1,3 +1,5 @@
+
+
 -- Gravel.cc
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -159,6 +161,7 @@ if not math.clamp then
         return x
     end
 end
+
 local function updateTeamTargetModes()
     -- Update all individual team target modes from master team target
     local masterTeamSelection = config.masterTeamTarget or "Enemies"
@@ -293,6 +296,7 @@ local function isTeammate(p)
     end
     return false
 end
+
 local function addesp(targetPlayer)
     if not targetPlayer then return false end
     
@@ -306,7 +310,7 @@ local function addesp(targetPlayer)
     if typeof(targetPlayer) == "Instance" and targetPlayer:IsA("Player") then
         if targetPlayer == localPlayer then return false end
         
-        local mode = config.targetMode or "Enemies"
+        local mode = config.masterTeamTarget or "Enemies"
         if mode == "Enemies" then
             return not isTeammate(targetPlayer)
         elseif mode == "Teams" then
@@ -473,7 +477,7 @@ end
 local function checkTargetHealth(target)
     if not target then return false end
     local char = getTargetCharacter(target)
-    if not char then return false end
+    if not char then return end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not humanoid then return false end
     
@@ -721,21 +725,21 @@ local function findClosestEnemy()
                 end
             elseif config.masterTarget == "Players" then
                 if typeof(t) == "Instance" and t:IsA("Player") then
-                    if config.targetMode == "Enemies" then
+                    if config.masterTeamTarget == "Enemies" then
                         shouldTarget = not isTeammate(t)
-                    elseif config.targetMode == "Teams" then
+                    elseif config.masterTeamTarget == "Teams" then
                         shouldTarget = isTeammate(t)
-                    elseif config.targetMode == "All" then
+                    elseif config.masterTeamTarget == "All" then
                         shouldTarget = true
                     end
                 end
             elseif config.masterTarget == "Both" then
                 if typeof(t) == "Instance" and t:IsA("Player") then
-                    if config.targetMode == "Enemies" then
+                    if config.masterTeamTarget == "Enemies" then
                         shouldTarget = not isTeammate(t)
-                    elseif config.targetMode == "Teams" then
+                    elseif config.masterTeamTarget == "Teams" then
                         shouldTarget = isTeammate(t)
-                    elseif config.targetMode == "All" then
+                    elseif config.masterTeamTarget == "All" then
                         shouldTarget = true
                     end
                 else
@@ -1659,7 +1663,7 @@ local function targethb(player)
     if not player or player == localPlayer then return false end  
     if not plralive(player) then return false end  
 
-    local mode = config.hitboxTeamTarget or "Enemies"
+    local mode = config.masterTeamTarget or "Enemies"
 
     if typeof(player) == "Instance" and player:IsA("Model") then
         if mode == "Teams" then
@@ -1740,7 +1744,7 @@ local function shouldTargetAimbot(target)
         end
     end
 
-    local mode = config.aimbotTeamTarget or "Enemies"
+    local mode = config.masterTeamTarget or "Enemies"
     if mode == "Enemies" then
         return not isTeammate(target)
     elseif mode == "Teams" then
@@ -2477,7 +2481,7 @@ local function onRenderStep()
         end
 
         if bodyPart and humanoid and humanoid.Health > 0 then
-            local mode = config.targetMode or "Enemies"
+            local mode = config.masterTeamTarget or "Enemies"
             local skip = false
             if mode == "Enemies" then
                 if typeof(pl) == "Instance" and pl:IsA("Player") and isTeammate(pl) then
@@ -3109,6 +3113,263 @@ local function makeui()
     local AimbotTab = Window:CreateTab("Aimbot", 4483362458)
     local HitboxTab = Window:CreateTab("Hitbox", 4483362458)
     local AntiAimTab = Window:CreateTab("AntiAim", 4483362458)
+
+    -- MainTab - Add Master Team Target and Master Target dropdowns at the top
+-- MainTab - Add Master Team Target and Master Target dropdowns
+MainTab:CreateDropdown({
+    Name = "Master Team Target",
+    Options = {"Enemies", "Teams", "All"},
+    CurrentOption = "Enemies",
+    Flag = "MasterTeamTarget",
+    Callback = function(Option)
+        config.masterTeamTarget = Option
+        -- Only update config values, don't call complex functions
+        config.targetMode = Option
+        config.aimbotTeamTarget = Option
+        config.hitboxTeamTarget = Option
+    end,
+})
+
+MainTab:CreateDropdown({
+    Name = "Master Target",
+    Options = {"Players", "NPCs", "Both"},
+    CurrentOption = "Players",
+    Flag = "MasterTarget",
+    Callback = function(Option)
+        config.masterTarget = Option
+    end,
+})
+
+MainTab:CreateDropdown({
+    Name = "Master GetTarget",
+    Options = {"Closest", "Lowest Health"},
+    CurrentOption = "Closest",
+    Flag = "MasterGetTarget",
+    Callback = function(Option)
+        config.masterGetTarget = Option
+        config.aimbotGetTarget = Option
+        config.silentGetTarget = Option
+        config.antiAimGetTarget = Option
+    end,
+})
+    
+    MainTab:CreateToggle({
+        Name = "Toggle Mobile GUI",
+        CurrentValue = false,
+        Flag = "MobileGUIToggle",
+        Callback = function(Value)
+            config.enableMobileGUI = Value
+            updateMobileGUI()
+            
+            if not Value then
+                destroyMobileGUI()
+            end
+        end,
+    })
+    
+    MainTab:CreateButton({
+        Name = "Reset Mobile GUI Position",
+        Callback = function()
+            if gui.mobileGui and gui.mobileGui.Frame then
+                local frame = gui.mobileGui.Frame
+                frame.Position = UDim2.new(1, -10, 1, -10)
+                if gui.mobileGui.MinimizeButton then
+                    gui.mobileGui.MinimizeButton.Text = "▲"
+                end
+                gui.mobileGui.IsMinimized = true
+                safeNotify({
+                    Title = "Mobile GUI",
+                    Content = "Position reset",
+                    Audio = "rbxassetid://17208361335",
+                    Length = 1,
+                    Image = "rbxassetid://4483362458",
+                    BarColor = Color3.fromRGB(0, 170, 255)
+                })
+            else
+                safeNotify({
+                    Title = "Mobile GUI",
+                    Content = "Mobile GUI not present",
+                    Audio = "rbxassetid://17208361335",
+                    Length = 1,
+                    Image = "rbxassetid://4483362458",
+                    BarColor = Color3.fromRGB(255, 100, 0)
+                })
+            end
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "SilentAim Keybind",
+        CurrentKeybind = "E",
+        HoldToInteract = false,
+        Flag = "SilentAimKeybind",
+        Callback = function(Key)
+            config.keybinds.silentaim = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned SilentAim: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "Aimbot Keybind",
+        CurrentKeybind = "Q",
+        HoldToInteract = false,
+        Flag = "AimbotKeybind",
+        Callback = function(Key)
+            config.keybinds.aimbot = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned Aimbot: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "AutoFarm Keybind",
+        CurrentKeybind = "F",
+        HoldToInteract = false,
+        Flag = "AutoFarmKeybind",
+        Callback = function(Key)
+            config.keybinds.autofarm = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned AutoFarm: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "AntiAim Keybind",
+        CurrentKeybind = "L",
+        HoldToInteract = false,
+        Flag = "AntiAimKeybind",
+        Callback = function(Key)
+            config.keybinds.antiaim = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned AntiAim: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "Hitbox Keybind",
+        CurrentKeybind = "G",
+        HoldToInteract = false,
+        Flag = "HitboxKeybind",
+        Callback = function(Key)
+            config.keybinds.hitbox = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned Hitbox: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "ESP Keybind",
+        CurrentKeybind = "Z",
+        HoldToInteract = false,
+        Flag = "ESPKeybind",
+        Callback = function(Key)
+            config.keybinds.esp = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned ESP: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateKeybind({
+        Name = "Client Config Keybind",
+        CurrentKeybind = "V",
+        HoldToInteract = false,
+        Flag = "ClientConfigKeybind",
+        Callback = function(Key)
+            config.keybinds.client = normalizeKeyString(Key)
+            safeNotify({
+                Title = "Keybind", 
+                Content = "Assigned Client Config: "..tostring(normalizeKeyString(Key)), 
+                Length = 1, 
+                Image = "rbxassetid://4483362458"
+            })
+        end,
+    })
+
+    MainTab:CreateButton({
+        Name = "Partclaim (use if NPC mode isn't working well)",
+        Callback = function()
+            pc()
+            safeNotify({
+                Title = "PartClaim",
+                Content = "Refreshed",
+                Audio = "rbxassetid://17208361335",
+                Length = 3,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(0, 255, 0)
+            })
+        end,
+    })
+    
+    MainTab:CreateDropdown({
+        Name = "Align Part (Autofarm)",
+        Options = {"Head", "HumanoidRootPart"},
+        CurrentOption = "Head",
+        Flag = "AutoFarmAlignPart",
+        Callback = function(Option)
+            config.autoFarmTargetPart = Option
+        end,
+    })
+    
+    MainTab:CreateSlider({
+        Name = "GetPart (Partclaim)",
+        Range = {0, 1000},
+        Increment = 10,
+        Suffix = "",
+        CurrentValue = config.gp,
+        Flag = "GetPartValue",
+        Callback = function(Value)
+            config.gp = Value
+        end,
+    })
+    
+    MainTab:CreateSlider({
+        Name = "TP Distance (Autofarm)",
+        Range = {1, 100},
+        Increment = 1,
+        Suffix = "",
+        CurrentValue = config.autoFarmDistance,
+        Flag = "AutoFarmDistance",
+        Callback = function(Value)
+            config.autoFarmDistance = Value
+        end,
+    })
+    
+    MainTab:CreateSlider({
+        Name = "Vertical Offset (Autofarm)",
+        Range = {-50, 50},
+        Increment = 1,
+        Suffix = "",
+        CurrentValue = config.autoFarmVerticalOffset,
+        Flag = "AutoFarmVerticalOffset",
+        Callback = function(Value)
+            config.autoFarmVerticalOffset = Value
+        end,
+    })
 
     -- VisualsTab
     VisualsTab:CreateToggle({
@@ -4116,236 +4377,6 @@ local function makeui()
         Flag = "CFrameWalkSpeed",
         Callback = function(Value)
             config.clientCFrameSpeed = Value
-        end,
-    })
-
-    -- MainTab
-    MainTab:CreateDropdown({
-        Name = "Master GetTarget",
-        Options = {"Closest", "Lowest Health"},
-        CurrentOption = "Closest",
-        Flag = "MasterGetTarget",
-        Callback = function(Option)
-            config.masterGetTarget = Option
-            config.aimbotGetTarget = Option
-            config.silentGetTarget = Option
-            config.antiAimGetTarget = Option
-        end,
-    })
-    MainTab:CreateToggle({
-        Name = "Toggle Mobile GUI",
-        CurrentValue = false,
-        Flag = "MobileGUIToggle",
-        Callback = function(Value)
-            config.enableMobileGUI = Value
-            updateMobileGUI()
-            
-            if not Value then
-                destroyMobileGUI()
-            end
-        end,
-    })
-    MainTab:CreateButton({
-        Name = "Reset Mobile GUI Position",
-        Callback = function()
-            if gui.mobileGui and gui.mobileGui.Frame then
-                local frame = gui.mobileGui.Frame
-                frame.Position = UDim2.new(1, -10, 1, -10)
-                if gui.mobileGui.MinimizeButton then
-                    gui.mobileGui.MinimizeButton.Text = "▲"
-                end
-                gui.mobileGui.IsMinimized = true
-                safeNotify({
-                    Title = "Mobile GUI",
-                    Content = "Position reset",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Mobile GUI",
-                    Content = "Mobile GUI not present",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 100, 0)
-                })
-            end
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "SilentAim Keybind",
-        CurrentKeybind = "E",
-        HoldToInteract = false,
-        Flag = "SilentAimKeybind",
-        Callback = function(Key)
-            config.keybinds.silentaim = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned SilentAim: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "Aimbot Keybind",
-        CurrentKeybind = "Q",
-        HoldToInteract = false,
-        Flag = "AimbotKeybind",
-        Callback = function(Key)
-            config.keybinds.aimbot = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned Aimbot: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "AutoFarm Keybind",
-        CurrentKeybind = "F",
-        HoldToInteract = false,
-        Flag = "AutoFarmKeybind",
-        Callback = function(Key)
-            config.keybinds.autofarm = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned AutoFarm: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "AntiAim Keybind",
-        CurrentKeybind = "L",
-        HoldToInteract = false,
-        Flag = "AntiAimKeybind",
-        Callback = function(Key)
-            config.keybinds.antiaim = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned AntiAim: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "Hitbox Keybind",
-        CurrentKeybind = "G",
-        HoldToInteract = false,
-        Flag = "HitboxKeybind",
-        Callback = function(Key)
-            config.keybinds.hitbox = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned Hitbox: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "ESP Keybind",
-        CurrentKeybind = "Z",
-        HoldToInteract = false,
-        Flag = "ESPKeybind",
-        Callback = function(Key)
-            config.keybinds.esp = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned ESP: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "Client Config Keybind",
-        CurrentKeybind = "V",
-        HoldToInteract = false,
-        Flag = "ClientConfigKeybind",
-        Callback = function(Key)
-            config.keybinds.client = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned Client Config: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateButton({
-        Name = "Partclaim (use if NPC mode isn't working well)",
-        Callback = function()
-            pc()
-            safeNotify({
-                Title = "PartClaim",
-                Content = "Refreshed",
-                Audio = "rbxassetid://17208361335",
-                Length = 3,
-                Image = "rbxassetid://4483362458",
-                BarColor = Color3.fromRGB(0, 255, 0)
-            })
-        end,
-    })
-    
-    MainTab:CreateDropdown({
-        Name = "Align Part (Autofarm)",
-        Options = {"Head", "HumanoidRootPart"},
-        CurrentOption = "Head",
-        Flag = "AutoFarmAlignPart",
-        Callback = function(Option)
-            config.autoFarmTargetPart = Option
-        end,
-    })
-    
-    MainTab:CreateSlider({
-        Name = "GetPart (Partclaim)",
-        Range = {0, 1000},
-        Increment = 10,
-        Suffix = "",
-        CurrentValue = config.gp,
-        Flag = "GetPartValue",
-        Callback = function(Value)
-            config.gp = Value
-        end,
-    })
-    
-    MainTab:CreateSlider({
-        Name = "TP Distance (Autofarm)",
-        Range = {1, 100},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.autoFarmDistance,
-        Flag = "AutoFarmDistance",
-        Callback = function(Value)
-            config.autoFarmDistance = Value
-        end,
-    })
-    
-    MainTab:CreateSlider({
-        Name = "Vertical Offset (Autofarm)",
-        Range = {-50, 50},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.autoFarmVerticalOffset,
-        Flag = "AutoFarmVerticalOffset",
-        Callback = function(Value)
-            config.autoFarmVerticalOffset = Value
         end,
     })
 
