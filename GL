@@ -4121,16 +4121,6 @@ local function makeui()
 
     -- MainTab
     MainTab:CreateDropdown({
-        Name = "Master Team Target",
-        Options = {"Enemies", "Teams", "All"},
-        CurrentOption = config.masterTeamTarget or "Enemies",
-        Flag = "MasterTeamTarget",
-        Callback = function(Option)
-            config.masterTeamTarget = Option
-            updateTeamTargetModes()
-        end,
-    })
-    MainTab:CreateDropdown({
         Name = "Master GetTarget",
         Options = {"Closest", "Lowest Health"},
         CurrentOption = "Closest",
@@ -4140,38 +4130,6 @@ local function makeui()
             config.aimbotGetTarget = Option
             config.silentGetTarget = Option
             config.antiAimGetTarget = Option
-        end,
-    })
-    MainTab:CreateDropdown({
-        Name = "Master Target",
-        Options = {"Players", "NPCs", "Both"},
-        CurrentOption = config.masterTarget or "Players",
-        Flag = "MasterTarget",
-        Callback = function(Option)
-            config.masterTarget = Option
-            if Option == "Both" then
-                config.masterTeamTarget = "All"
-            end
-            updateTeamTargetModes()
-            config.aimbotCurrentTarget = nil
-            config.currentTarget = nil
-            local validTargets = getAllTargets()
-            local validTargetSet = {}
-            for _, target in ipairs(validTargets) do
-                validTargetSet[target] = true
-            end
-            
-            for target, _ in pairs(config.espData) do
-                if not validTargetSet[target] then
-                    removeESPLabel(target)
-                end
-            end
-            
-            for target, _ in pairs(config.highlightData) do
-                if not validTargetSet[target] then
-                    removeHighlightESP(target)
-                end
-            end
         end,
     })
     MainTab:CreateToggle({
