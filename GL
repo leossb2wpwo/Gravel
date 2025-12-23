@@ -1,5 +1,3 @@
-
-
 -- Gravel.cc
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -12,9 +10,11 @@ local localPlayer = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 local gui = {}
+local patcher = true
 
+-- random stuff lololol
 local config = {
-    Enabled = false,
+    startsa = false,
     fovsize = 120,
     predic = 1,
     espc = Color3.fromRGB(255, 182, 193),
@@ -24,7 +24,7 @@ local config = {
     eme = true,
     wallc = false,
     bodypart = "Head",
-    espEnabled = false,
+    espon = false,
     prefTextESP = false,
     highlightesp = false,
     prefHighlightESP = false,
@@ -43,7 +43,6 @@ local config = {
     fovct = Color3.fromRGB(255, 255, 0),
     playerConnections = {},
     characterConnections = {},
-    looprfd = true,
     targetMode = "Enemies",
     centerLocked = {},
     hitchance = 100,
@@ -117,15 +116,15 @@ local config = {
     autoFarmPartClaimStarted = false,
     autoFarmLastRefresh = 0,
 
-    enableMobileGUI = false,
+    mobgui = false,
     keybinds = {
-        silentaim = nil,
-        aimbot = nil,
-        autofarm = nil,
-        antiaim = nil,
-        hitbox = nil,
-        esp = nil,
-        client = nil,
+        silentaim = "E",
+        aimbot = "Q",
+        autofarm = "F",
+        antiaim = "L",
+        hitbox = "G",
+        esp = "Z",
+        client = "V",
     }
 }
 
@@ -162,11 +161,10 @@ if not math.clamp then
     end
 end
 
+-- FIXED: Updated team target modes with proper synchronization
 local function updateTeamTargetModes()
-    -- Update all individual team target modes from master team target
     local masterTeamSelection = config.masterTeamTarget or "Enemies"
     
-    -- Don't override if master team target is All (it should override everything)
     if masterTeamSelection == "All" then
         config.targetMode = "All"
         config.aimbotTeamTarget = "All"
@@ -177,19 +175,27 @@ local function updateTeamTargetModes()
         config.hitboxTeamTarget = masterTeamSelection
     end
     
-    -- Update get target modes based on master setting
     if config.masterGetTarget then
         config.aimbotGetTarget = config.masterGetTarget
         config.silentGetTarget = config.masterGetTarget
         config.antiAimGetTarget = config.masterGetTarget
     end
 
-    -- Refresh ESP for all targets based on Master Target setting
+    -- Refresh ESP for all targets
     if config.espMasterEnabled then
+        local targetsToRemove = {}
         for target, _ in pairs(config.espData) do
+            table.insert(targetsToRemove, target)
+        end
+        for _, target in ipairs(targetsToRemove) do
             removeESPLabel(target)
         end
+        
+        local targetsToRemoveHigh = {}
         for target, _ in pairs(config.highlightData) do
+            table.insert(targetsToRemoveHigh, target)
+        end
+        for _, target in ipairs(targetsToRemoveHigh) do
             removeHighlightESP(target)
         end
         
@@ -218,17 +224,17 @@ local function updateTeamTargetModes()
 end
 
 local function pc()
-local plr = game.Players.LocalPlayer
-task.spawn(function()
-    while true do
-        pcall(function()
-            plr.ReplicationFocus = workspace
-            plr.MaximumSimulationRadius = math.huge
-            plr.SimulationRadius = config.gp
-        end)
-        task.wait(0.1)
-    end
-end)
+    local plr = game.Players.LocalPlayer
+    task.spawn(function()
+        while true do
+            pcall(function()
+                plr.ReplicationFocus = workspace
+                plr.MaximumSimulationRadius = math.huge
+                plr.SimulationRadius = config.gp
+            end)
+            task.wait(0.1)
+        end
+    end)
 end
 
 local function isNPCModel(model)
@@ -300,13 +306,11 @@ end
 local function addesp(targetPlayer)
     if not targetPlayer then return false end
     
-    -- If targeting NPCs and this is an NPC, always return true
     if (config.masterTarget == "NPCs" or config.masterTarget == "Both") and 
        typeof(targetPlayer) == "Instance" and targetPlayer:IsA("Model") then
         return true
     end
     
-    -- For players, check based on team mode
     if typeof(targetPlayer) == "Instance" and targetPlayer:IsA("Player") then
         if targetPlayer == localPlayer then return false end
         
@@ -1243,10 +1247,10 @@ local function updateESPColors()
     local toRemove = {}
     for targetPlayer, data in pairs(config.espData) do
         if (not targetPlayer) or (not data) or (not data.label) then
-            toRemove[#toRemove+1] = targetPlayer
+            table.insert(toRemove, targetPlayer)
         else
             if not addesp(targetPlayer) then
-                toRemove[#toRemove+1] = targetPlayer
+                table.insert(toRemove, targetPlayer)
             else
                 local tchar = getTargetCharacter(targetPlayer)
                 local humanoid = tchar and tchar:FindFirstChildOfClass("Humanoid")
@@ -1311,10 +1315,10 @@ local function updateESPColors()
     local toRemoveHighlights = {}
     for targetPlayer, highlight in pairs(config.highlightData) do
         if not targetPlayer or not highlight or not highlight.Parent then
-            toRemoveHighlights[#toRemoveHighlights+1] = targetPlayer
+            table.insert(toRemoveHighlights, targetPlayer)
         else
             if not addesp(targetPlayer) then
-                toRemoveHighlights[#toRemoveHighlights+1] = targetPlayer
+                table.insert(toRemoveHighlights, targetPlayer)
             else
                 if targetPlayer == config.currentTarget or targetPlayer == config.aimbotCurrentTarget then
                     highlight.FillColor = config.esptargetc
@@ -1336,21 +1340,24 @@ local function toggleHighlightESP(enabled)
 
     if config.espMasterEnabled and enabled then
         for _, target in ipairs(getAllTargets()) do
-            if addesp(target) and target.Character then
+            if addesp(target) and getTargetCharacter(target) then
                 high(target)
             end
         end
     else
+        local targetsToRemove = {}
         for targetPlayer, _ in pairs(config.highlightData) do
+            table.insert(targetsToRemove, targetPlayer)
+        end
+        for _, targetPlayer in ipairs(targetsToRemove) do
             removeHighlightESP(targetPlayer)
         end
-        config.highlightData = {}
     end
 end
 
 local function toggleTextESP(enabled)
     config.prefTextESP = enabled
-    config.espEnabled = enabled and config.espMasterEnabled or false
+    config.espon = enabled and config.espMasterEnabled or false
 
     if config.espMasterEnabled and enabled then
         for _, target in ipairs(getAllTargets()) do
@@ -1359,10 +1366,13 @@ local function toggleTextESP(enabled)
             end
         end
     else
+        local targetsToRemove = {}
         for targetPlayer, _ in pairs(config.espData) do
+            table.insert(targetsToRemove, targetPlayer)
+        end
+        for _, targetPlayer in ipairs(targetsToRemove) do
             removeESPLabel(targetPlayer)
         end
-        config.espData = {}
     end
 end
 
@@ -1378,10 +1388,13 @@ local function toggleBoxESP(enabled)
         end
         updateESPColors()
     else
+        local targetsToRemove = {}
         for targetPlayer, _ in pairs(config.espData) do
+            table.insert(targetsToRemove, targetPlayer)
+        end
+        for _, targetPlayer in ipairs(targetsToRemove) do
             removeESPLabel(targetPlayer)
         end
-        config.espData = {}
     end
 end
 
@@ -1398,39 +1411,40 @@ local function toggleHealthESP(enabled)
         updateESPColors()
     end
 end
-
 local function applyESPMaster(state)
     config.espMasterEnabled = state
 
     if not state then
-        for targetPlayer, _ in pairs(config.espData) do
-            removeESPLabel(targetPlayer)
+        for target in pairs(config.espData) do
+            removeESPLabel(target)
         end
-        config.espData = {}
 
-        for targetPlayer, _ in pairs(config.highlightData) do
-            removeHighlightESP(targetPlayer)
+        for target in pairs(config.highlightData) do
+            removeHighlightESP(target)
         end
-        config.highlightData = {}
-        config.espEnabled = false
+
+        config.espon = false
         config.highlightesp = false
     else
         if config.prefHighlightESP then
             for _, target in ipairs(getAllTargets()) do
-                if addesp(target) and target.Character then
+                if addesp(target) and getTargetCharacter(target) then
                     high(target)
                 end
             end
         end
-        if config.prefTextESP or config.prefBoxESP or config.prefHealthESP or config.prefHeadDotESP then
+
+        if config.prefTextESP or config.prefBoxESP or
+           config.prefHealthESP or config.prefHeadDotESP then
             for _, target in ipairs(getAllTargets()) do
                 if addesp(target) then
                     makeesp(target)
                 end
             end
-            config.espEnabled = config.prefTextESP
-            config.highlightesp = config.prefHighlightESP
         end
+
+        config.espon = config.prefTextESP
+        config.highlightesp = config.prefHighlightESP
     end
 
     updateESPColors()
@@ -1636,15 +1650,20 @@ end
 
 local function updateHitboxes()
     if not config.hitboxEnabled then  
+        local targetsToRemove = {}
         for player, _ in pairs(config.hitboxExpandedParts) do  
-            restoreTorso(player)  
-        end  
+            table.insert(targetsToRemove, player)
+        end
+        for _, player in ipairs(targetsToRemove) do
+            restoreTorso(player)
+        end
         return  
     end
 
+    local targetsToRemove = {}
     for player, data in pairs(config.hitboxExpandedParts) do
         if not player or not plralive(player) or not getTargetCharacter(player) then
-            restoreTorso(player)
+            table.insert(targetsToRemove, player)
         else
             local torso = getTargetCharacter(player):FindFirstChild("Torso") or getTargetCharacter(player):FindFirstChild("UpperTorso")
             if torso and data.targetSize then
@@ -1656,6 +1675,10 @@ local function updateHitboxes()
                 end)
             end
         end
+    end
+    
+    for _, player in ipairs(targetsToRemove) do
+        restoreTorso(player)
     end
 end
 
@@ -1698,6 +1721,7 @@ local function applyhb()
 end
 
 local function hb()
+    local targetsToRemove = {}
     for playerObj, targetSize in pairs(config.targethbSizes) do
         if playerObj and playerObj ~= localPlayer and getTargetCharacter(playerObj) and plralive(playerObj) then
             local part = getTargetCharacter(playerObj):FindFirstChild(config.originalSizes[playerObj] and config.originalSizes[playerObj].partName) 
@@ -1723,9 +1747,13 @@ local function hb()
             end
         else
             if playerObj ~= localPlayer then
-                restorePartForPlayer(playerObj)
+                table.insert(targetsToRemove, playerObj)
             end
         end
+    end
+    
+    for _, playerObj in ipairs(targetsToRemove) do
+        restorePartForPlayer(playerObj)
     end
     
     updateHitboxes()
@@ -1903,8 +1931,8 @@ local function aimbotUpdate()
 end
 
 local function aimbotfov()
-    if config.aimbotFOVRing and config.aimbotFOVRing.Parent then
-        config.aimbotFOVRing:Destroy()
+    if config.aimbotFOVRing and config.aimbotFOVRing.ScreenGui and config.aimbotFOVRing.ScreenGui.Parent then
+        config.aimbotFOVRing.ScreenGui:Destroy()
     end
     
     local screenGui = Instance.new("ScreenGui")
@@ -1919,7 +1947,7 @@ local function aimbotfov()
     ringFrame.Size = UDim2.new(0, config.aimbotFOVSize * 2, 0, config.aimbotFOVSize * 2)
     ringFrame.Position = UDim2.new(0.5, 0, 0.5, -28)
     ringFrame.BackgroundTransparency = 1
-    ringFrame.Visible = config.aimbotEnabled
+    ringFrame.Visible = config.aimbotEnabled and not config.aimbot360Enabled
     ringFrame.Parent = screenGui
     
     local ringCorner = Instance.new("UICorner")
@@ -1944,16 +1972,17 @@ end
 
 local function updateAimbotFOVRing()
     if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-        if config.aimbot360Enabled then
+        if config.aimbot360Enabled or not config.aimbotEnabled then
             config.aimbotFOVRing.RingFrame.Visible = false
         else
             config.aimbotFOVRing.RingFrame.Size = UDim2.new(0, config.aimbotFOVSize * 2, 0, config.aimbotFOVSize * 2)
             config.aimbotFOVRing.RingFrame.Position = UDim2.new(0.5, 0, 0.5, -28)
-            config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled
+            config.aimbotFOVRing.RingFrame.Visible = true
         end
     end
 end
 
+-- FIXED: 360 Aimbot now properly respects main aimbot toggle
 local function toggle360Aimbot(state)
     if state then
         if not config.aimbotEnabled then
@@ -1999,6 +2028,15 @@ local function toggle360Aimbot(state)
     end
 end
 
+-- FIXED: Ensure 360 aimbot is disabled when main aimbot is toggled off
+local function handleAimbotToggle(state)
+    config.aimbotEnabled = state
+    if not state and config.aimbot360Enabled then
+        toggle360Aimbot(false)
+    end
+    updateAimbotFOVRing()
+end
+
 RunService.Heartbeat:Connect(hb)
 RunService.RenderStepped:Connect(aimbotUpdate)
 RunService.Heartbeat:Connect(antiAimUpdate)
@@ -2008,25 +2046,25 @@ local function isMobileDevice()
     return ok and val
 end
 
-local function destroyMobileGUI()
-    if not gui then return end
-    if gui.mobileGui and gui.mobileGui.ScreenGui then
+local function nomobgui()
+    if gui and gui.mobileGui and gui.mobileGui.ScreenGui then
         pcall(function()
-            gui.mobileGui.ScreenGui.Enabled = false
+            gui.mobileGui.ScreenGui:Destroy()
         end)
     end
     gui.mobileGui = nil
 end
 
+-- FIXED: Mobile GUI now properly updates config values
 local function createMobileGUIElements()
-    if gui.mobileGui and gui.mobileGui.ScreenGui then
+    if gui.mobileGui and gui.mobileGui.ScreenGui and gui.mobileGui.ScreenGui.Parent then
         gui.mobileGui.ScreenGui.Enabled = true
         return
-    elseif gui.mobileGui and not gui.mobileGui.ScreenGui.Parent then
+    elseif gui.mobileGui and gui.mobileGui.ScreenGui and not gui.mobileGui.ScreenGui.Parent then
         gui.mobileGui = nil
     end
     
-    if gui.mobileGui and gui.mobileGui.Parent then return end
+    if gui.mobileGui and gui.mobileGui.ScreenGui and gui.mobileGui.ScreenGui.Parent then return end
     
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "GravelMobileGUI"
@@ -2244,7 +2282,7 @@ local function createMobileGUIElements()
             }):Play()
             
             if name == "Silent Aim" then
-                if not config.Enabled then
+                if not config.startsa then
                     if gui.RingHolder then gui.RingHolder.Visible = false end
                     for pl, _ in pairs(config.activeApplied) do
                         restorePartForPlayer(pl)
@@ -2254,15 +2292,7 @@ local function createMobileGUIElements()
                     lrfd()
                 end
             elseif name == "Aimbot" then
-                if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-                    config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled
-                end
-                if config.aimbotEnabled and not config.aimbotFOVRing then
-                    aimbotfov()
-                end
-                if not config.aimbotEnabled and config.aimbot360Enabled then
-                    toggle360Aimbot(false)
-                end
+                handleAimbotToggle(newState)
             elseif name == "Auto Farm" then
                 if newState then
                     if type(autoFarmProcess) == "function" then
@@ -2297,7 +2327,13 @@ local function createMobileGUIElements()
                 if newState then
                     applyhb()
                 else
-                    for pl, _ in pairs(config.hitboxExpandedParts) do restoreTorso(pl) end
+                    local targetsToRemove = {}
+                    for pl, _ in pairs(config.hitboxExpandedParts) do
+                        table.insert(targetsToRemove, pl)
+                    end
+                    for _, pl in ipairs(targetsToRemove) do
+                        restoreTorso(pl)
+                    end
                 end
             elseif name == "Client Config" then
                 applyClientMaster(newState)
@@ -2310,8 +2346,8 @@ local function createMobileGUIElements()
     end
 
     local y = 1
-    local silentBtn = makeToggleButton("Silent Aim", y, function() return config.Enabled end, function(v) config.Enabled = v end); y = y + 1
-    local aimbotBtn = makeToggleButton("Aimbot", y, function() return config.aimbotEnabled end, function(v) config.aimbotEnabled = v end); y = y + 1
+    local silentBtn = makeToggleButton("Silent Aim", y, function() return config.startsa end, function(v) config.startsa = v end); y = y + 1
+    local aimbotBtn = makeToggleButton("Aimbot", y, function() return config.aimbotEnabled end, function(v) handleAimbotToggle(v) end); y = y + 1
     local autoBtn = makeToggleButton("Auto Farm", y, function() return config.autoFarmEnabled end, function(v) config.autoFarmEnabled = v end); y = y + 1
     local antiBtn = makeToggleButton("Anti Aim", y, function() return config.antiAimEnabled end, function(v) config.antiAimEnabled = v end); y = y + 1
     local hitboxBtn = makeToggleButton("Hitbox", y, function() return config.hitboxEnabled end, function(v) config.hitboxEnabled = v end); y = y + 1
@@ -2364,13 +2400,14 @@ local function createMobileGUIElements()
     }
 
     if gui.RingHolder then
-        gui.RingHolder.Visible = config.Enabled
+        gui.RingHolder.Visible = config.startsa
     end
     if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-        config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled
+        config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled and not config.aimbot360Enabled
     end
 end
 
+-- FIXED: Mobile GUI now properly updates when config changes
 local function updateMobileGUI()
     if not isMobileDevice() then
         if gui.mobileGui and gui.mobileGui.ScreenGui then
@@ -2379,7 +2416,7 @@ local function updateMobileGUI()
         return
     end
     
-    if not config.enableMobileGUI then
+    if not config.mobgui then
         if gui.mobileGui and gui.mobileGui.ScreenGui then
             gui.mobileGui.ScreenGui.Enabled = false
         end
@@ -2395,9 +2432,9 @@ local function updateMobileGUI()
             local b = gui.mobileGui.Buttons
             
             if b.SilentAim and b.SilentAim.Button then
-                b.SilentAim.Button.BackgroundColor3 = config.Enabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
+                b.SilentAim.Button.BackgroundColor3 = config.startsa and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
                 if b.SilentAim.Stroke then
-                    b.SilentAim.Stroke.Color = config.Enabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
+                    b.SilentAim.Stroke.Color = config.startsa and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
                 end
             end
             
@@ -2446,6 +2483,13 @@ local function updateMobileGUI()
     end
 end
 
+task.spawn(function()
+    while patcher do
+        updateMobileGUI()
+        task.wait(0.1)
+    end
+end)
+
 local function onRenderStep()
     if not camera or not camera.Parent then
         camera = workspace.CurrentCamera
@@ -2454,7 +2498,7 @@ local function onRenderStep()
 
     if not gui.RingHolder or not gui.RingStroke then return end
 
-    if not config.Enabled then
+    if not config.startsa then
         gui.RingHolder.Visible = false
         return
     else
@@ -2561,10 +2605,14 @@ local function onRenderStep()
         updateESPColors()
     end
 
+    local targetsToRemove = {}
     for pl, _ in pairs(config.activeApplied) do
         if (not best) or pl ~= best.player or not plralive(pl) then
-            restorePartForPlayer(pl)
+            table.insert(targetsToRemove, pl)
         end
+    end
+    for _, pl in ipairs(targetsToRemove) do
+        restorePartForPlayer(pl)
     end
 
     if best and plralive(best.player) then
@@ -2671,17 +2719,24 @@ local function normalizeKeyString(k)
     return s:upper()
 end
 
+-- FIXED: Keybinds now work properly
 local function applyKeybindAction(key)
-    local keyUpper = tostring(key):upper()
+    local keyUpper = normalizeKeyString(key)
+    if not keyUpper then return false end
+    
     for action, bound in pairs(config.keybinds) do
-        if bound and tostring(bound):upper() == keyUpper then
+        if bound and normalizeKeyString(bound) == keyUpper then
             if action == "silentaim" then
-                config.Enabled = not config.Enabled
-                if not config.Enabled then
+                config.startsa = not config.startsa
+                if not config.startsa then
                     if gui.RingHolder then
                         gui.RingHolder.Visible = false
                     end
+                    local targetsToRemove = {}
                     for pl, _ in pairs(config.activeApplied) do
+                        table.insert(targetsToRemove, pl)
+                    end
+                    for _, pl in ipairs(targetsToRemove) do
                         restorePartForPlayer(pl)
                     end
                     safeNotify({Title="SilentAim", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
@@ -2691,25 +2746,10 @@ local function applyKeybindAction(key)
                     safeNotify({Title="SilentAim", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
                 end
             elseif action == "aimbot" then
-                config.aimbotEnabled = not config.aimbotEnabled
-                if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-                    config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled
-                end
-                
-                if config.aimbotEnabled and config.aimbot360Enabled then
-                    updateAimbotFOVRing()
-                elseif not config.aimbotEnabled then
-                    if config.aimbot360Enabled then
-                        toggle360Aimbot(false)
-                    end
-                end
-                
+                handleAimbotToggle(not config.aimbotEnabled)
                 if config.aimbotEnabled then
-                    if not config.aimbotFOVRing then aimbotfov() end
                     safeNotify({Title="Aimbot", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
                 else
-                    config.aimbotCurrentTarget = nil
-                    updateESPColors()
                     safeNotify({Title="Aimbot", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
                 end
             elseif action == "autofarm" then
@@ -2735,7 +2775,11 @@ local function applyKeybindAction(key)
                     applyhb()
                     safeNotify({Title="Hitbox", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
                 else
+                    local targetsToRemove = {}
                     for player, _ in pairs(config.hitboxExpandedParts) do
+                        table.insert(targetsToRemove, player)
+                    end
+                    for _, player in ipairs(targetsToRemove) do
                         restoreTorso(player)
                     end
                     safeNotify({Title="Hitbox", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
@@ -2743,7 +2787,6 @@ local function applyKeybindAction(key)
             elseif action == "esp" then
                 config.espMasterEnabled = not config.espMasterEnabled
                 applyESPMaster(config.espMasterEnabled)
-                updateMobileGUI()
                 if config.espMasterEnabled then
                     safeNotify({Title="ESP", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,170,255)})
                 else
@@ -2752,21 +2795,19 @@ local function applyKeybindAction(key)
             elseif action == "client" then
                 config.clientMasterEnabled = not config.clientMasterEnabled
                 applyClientMaster(config.clientMasterEnabled)
-                updateMobileGUI()
                 if config.clientMasterEnabled then
                     safeNotify({Title="Client Config", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,170,255)})
                 else
                     safeNotify({Title="Client Config", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
                 end
             end
-            updateMobileGUI()
-            updateESPColors()
             return true
         end
     end
     return false
 end
 
+-- FIXED: ESP now properly handles player respawns, joins, and team changes
 local function setupDeathListener(targetPlayer)
     local char = getTargetCharacter(targetPlayer)
     if not char then return end
@@ -2779,18 +2820,16 @@ local function setupDeathListener(targetPlayer)
         config.characterConnections[targetPlayer] = nil
     end
 
-    config.characterConnections[targetPlayer] = humanoid.HealthChanged:Connect(function(health)
-        if health <= 0 then
-            restorePartForPlayer(targetPlayer)
-            restoreTorso(targetPlayer)
-            if config.currentTarget == targetPlayer then
-                config.currentTarget = nil
-                updateESPColors()
-            end
-            if config.aimbotCurrentTarget == targetPlayer then
-                config.aimbotCurrentTarget = nil
-                updateESPColors()
-            end
+    config.characterConnections[targetPlayer] = humanoid.Died:Connect(function()
+        restorePartForPlayer(targetPlayer)
+        restoreTorso(targetPlayer)
+        if config.currentTarget == targetPlayer then
+            config.currentTarget = nil
+            updateESPColors()
+        end
+        if config.aimbotCurrentTarget == targetPlayer then
+            config.aimbotCurrentTarget = nil
+            updateESPColors()
         end
     end)
 end
@@ -2838,6 +2877,7 @@ local function cleanplrdata(targetPlayer)
     end
 end
 
+-- FIXED: Enhanced player listener setup for ESP
 local function setupPlayerListeners(pl)
     if pl == localPlayer then return end
     if config.playerConnections[pl] then
@@ -2866,6 +2906,7 @@ local function setupPlayerListeners(pl)
             end
         end
     end
+    
     updateESPForPlayer()
     
     local charAddedConn = pl.CharacterAdded:Connect(function(char)
@@ -2892,13 +2933,7 @@ local function setupPlayerListeners(pl)
     table.insert(config.playerConnections[pl], charAddedConn)
     
     local charRemovingConn = pl.CharacterRemoving:Connect(function(char)
-        if config.espData[pl] then
-            local data = config.espData[pl]
-            if data.label then data.label.Visible = false end
-            if data.box then data.box.Visible = false end
-            if data.healthBG then data.healthBG.Visible = false end
-            if data.headDot then data.headDot.Visible = false end
-        end
+        removeESPLabel(pl)
         removeHighlightESP(pl)
     end)
     table.insert(config.playerConnections[pl], charRemovingConn)
@@ -2912,19 +2947,6 @@ local function setupPlayerListeners(pl)
     if pl.Character then
         setupDeathListener(pl)
     end
-end
-
-local function lrfd()
-    if config.looprfd then return end
-    config.looprfd = true
-
-    task.spawn(function()
-        while config.Enabled do
-            removeAllFaceDecals()
-            task.wait(0.1)
-        end
-        config.looprfd = false
-    end)
 end
 
 local function safeGetCharacter()
@@ -3089,8 +3111,8 @@ local function makeui()
         Name = "Gravel.cc",
         LoadingTitle = "Gravel.cc",
         LoadingSubtitle = "by hmmm5651",
-        Theme = "AmbeGlow",
-        ShowText = "Gravel",
+        Theme = "AmberGlow",
+        ShowText = "Gravel :o",
         ToggleUIKeybind = "K",
         ConfigurationSaving = {
             Enabled = false,
@@ -3105,7 +3127,6 @@ local function makeui()
         KeySystem = false
     })
 
-    -- Create all tabs
     local MainTab = Window:CreateTab("Main", 4483362458)
     local ClientTab = Window:CreateTab("Client", 4483362458)
     local SilentAimTab = Window:CreateTab("SilentAim", 4483362458)
@@ -3114,55 +3135,51 @@ local function makeui()
     local HitboxTab = Window:CreateTab("Hitbox", 4483362458)
     local AntiAimTab = Window:CreateTab("AntiAim", 4483362458)
 
-    -- MainTab - Add Master Team Target and Master Target dropdowns at the top
--- MainTab - Add Master Team Target and Master Target dropdowns
-MainTab:CreateDropdown({
-    Name = "Master Team Target",
-    Options = {"Enemies", "Teams", "All"},
-    CurrentOption = "Enemies",
-    Flag = "MasterTeamTarget",
-    Callback = function(Option)
-        config.masterTeamTarget = Option
-        -- Only update config values, don't call complex functions
-        config.targetMode = Option
-        config.aimbotTeamTarget = Option
-        config.hitboxTeamTarget = Option
-    end,
-})
+    -- MainTab
+    MainTab:CreateDropdown({
+        Name = "Master Team Target",
+        Options = {"Enemies", "Teams", "All"},
+        CurrentOption = "Enemies",
+        Flag = "MasterTeamTarget",
+        Callback = function(Option)
+            config.masterTeamTarget = Option
+            config.targetMode = Option
+            config.aimbotTeamTarget = Option
+            config.hitboxTeamTarget = Option
+        end,
+    })
 
-MainTab:CreateDropdown({
-    Name = "Master Target",
-    Options = {"Players", "NPCs", "Both"},
-    CurrentOption = "Players",
-    Flag = "MasterTarget",
-    Callback = function(Option)
-        config.masterTarget = Option
-    end,
-})
+    MainTab:CreateDropdown({
+        Name = "Master Target",
+        Options = {"Players", "NPCs", "Both"},
+        CurrentOption = "Players",
+        Flag = "MasterTarget",
+        Callback = function(Option)
+            config.masterTarget = Option
+        end,
+    })
 
-MainTab:CreateDropdown({
-    Name = "Master GetTarget",
-    Options = {"Closest", "Lowest Health"},
-    CurrentOption = "Closest",
-    Flag = "MasterGetTarget",
-    Callback = function(Option)
-        config.masterGetTarget = Option
-        config.aimbotGetTarget = Option
-        config.silentGetTarget = Option
-        config.antiAimGetTarget = Option
-    end,
-})
+    MainTab:CreateDropdown({
+        Name = "Master GetTarget",
+        Options = {"Closest", "Lowest Health"},
+        CurrentOption = "Closest",
+        Flag = "MasterGetTarget",
+        Callback = function(Option)
+            config.masterGetTarget = Option
+            config.aimbotGetTarget = Option
+            config.silentGetTarget = Option
+            config.antiAimGetTarget = Option
+        end,
+    })
     
     MainTab:CreateToggle({
         Name = "Toggle Mobile GUI",
         CurrentValue = false,
         Flag = "MobileGUIToggle",
         Callback = function(Value)
-            config.enableMobileGUI = Value
-            updateMobileGUI()
-            
+            config.mobgui = Value
             if not Value then
-                destroyMobileGUI()
+                nomobgui()
             end
         end,
     })
@@ -3373,12 +3390,11 @@ MainTab:CreateDropdown({
 
     -- VisualsTab
     VisualsTab:CreateToggle({
-        Name = "Enable ESP (Ctrl+'Z')",
+        Name = "Toggle ESP (Ctrl+'Z')",
         CurrentValue = false,
-        Flag = "ESPEnabled",
-        Callback = function(Value)
-            applyESPMaster(Value)
-            updateMobileGUI()
+        Flag = "EspTog",
+        Callback = function(state)
+            applyESPMaster(state)
             if Value then
                 safeNotify({
                     Title = "ESP Master",
@@ -3407,7 +3423,6 @@ MainTab:CreateDropdown({
         Flag = "HighlightESP",
         Callback = function(Value)
             toggleHighlightESP(Value)
-            updateMobileGUI()
             if Value then
                 safeNotify({
                     Title = "Highlight ESP",
@@ -3436,7 +3451,6 @@ MainTab:CreateDropdown({
         Flag = "TextESP",
         Callback = function(Value)
             toggleTextESP(Value)
-            updateMobileGUI()
             if Value then
                 safeNotify({
                     Title = "Text ESP",
@@ -3465,7 +3479,6 @@ MainTab:CreateDropdown({
         Flag = "BoxESP",
         Callback = function(Value)
             toggleBoxESP(Value)
-            updateMobileGUI()
             if Value then
                 safeNotify({
                     Title = "Box ESP",
@@ -3494,7 +3507,6 @@ MainTab:CreateDropdown({
         Flag = "HealthESP",
         Callback = function(Value)
             toggleHealthESP(Value)
-            updateMobileGUI()
             if Value then
                 safeNotify({
                     Title = "Health ESP",
@@ -3533,7 +3545,6 @@ MainTab:CreateDropdown({
                 end
                 updateESPColors()
             end
-            updateMobileGUI()
             if Value then
                 safeNotify({
                     Title = "HeadDot ESP",
@@ -3612,7 +3623,6 @@ MainTab:CreateDropdown({
         Flag = "AntiAimToggle",
         Callback = function(Value)
             config.antiAimEnabled = Value
-            updateMobileGUI()
             if not Value then
                 returnToOriginalPosition()
                 safeNotify({
@@ -3865,25 +3875,9 @@ MainTab:CreateDropdown({
         Name = "Toggle Aimbot (Ctrl+'Q')",
         CurrentValue = false,
         Flag = "AimbotToggle",
-        Callback = function(Value)
-            config.aimbotEnabled = Value
-            updateMobileGUI()
-            if Value and config.aimbot360Enabled then
-                updateAimbotFOVRing()
-            elseif not Value then
-                if config.aimbot360Enabled then
-                    toggle360Aimbot(false)
-                end
-            end
-            
-            if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-                config.aimbotFOVRing.RingFrame.Visible = Value
-            end
-            
+        Callback = function(state)
+            handleAimbotToggle(state)
             if Value then
-                if not config.aimbotFOVRing then
-                    aimbotfov()
-                end
                 safeNotify({
                     Title = "Aimbot",
                     Content = "Enabled",
@@ -3893,8 +3887,6 @@ MainTab:CreateDropdown({
                     BarColor = Color3.fromRGB(0, 255, 0)
                 })
             else
-                config.aimbotCurrentTarget = nil
-                updateESPColors()
                 safeNotify({
                     Title = "Aimbot",
                     Content = "Disabled",
@@ -4016,7 +4008,6 @@ MainTab:CreateDropdown({
         Flag = "HitboxToggle",
         Callback = function(Value)
             config.hitboxEnabled = Value
-            updateMobileGUI()
             if Value then
                 applyhb()
                 safeNotify({
@@ -4028,7 +4019,11 @@ MainTab:CreateDropdown({
                     BarColor = Color3.fromRGB(0, 255, 0)
                 })
             else
+                local targetsToRemove = {}
                 for player, _ in pairs(config.hitboxExpandedParts) do
+                    table.insert(targetsToRemove, player)
+                end
+                for _, player in ipairs(targetsToRemove) do
                     restoreTorso(player)
                 end
                 safeNotify({
@@ -4092,13 +4087,16 @@ MainTab:CreateDropdown({
         CurrentValue = false,
         Flag = "SilentAimToggle",
         Callback = function(Value)
-            config.Enabled = Value
-            updateMobileGUI()
+            config.startsa = Value
             if not Value then
                 if gui.RingHolder then
                     gui.RingHolder.Visible = false
                 end
+                local targetsToRemove = {}
                 for pl, _ in pairs(config.activeApplied) do
+                    table.insert(targetsToRemove, pl)
+                end
+                for _, pl in ipairs(targetsToRemove) do
                     restorePartForPlayer(pl)
                 end
                 safeNotify({
@@ -4187,7 +4185,11 @@ MainTab:CreateDropdown({
         CurrentOption = "Head",
         Flag = "SilentAimTargetPart",
         Callback = function(Option)
+            local targetsToRemove = {}
             for pl, _ in pairs(config.activeApplied) do
+                table.insert(targetsToRemove, pl)
+            end
+            for _, pl in ipairs(targetsToRemove) do
                 restorePartForPlayer(pl)
             end
             if Option == "Head" then
@@ -4246,7 +4248,6 @@ MainTab:CreateDropdown({
         Flag = "ClientMasterToggle",
         Callback = function(Value)
             applyClientMaster(Value)
-            updateMobileGUI()
         end,
     })
     local Divider = ClientTab:CreateDivider()
@@ -4418,8 +4419,6 @@ MainTab:CreateDropdown({
     gui.RingStroke = ringStroke
     
     aimbotfov()
-    updateMobileGUI()
-
     return Window
 end
 
@@ -4427,9 +4426,10 @@ local function isCtrlDown()
     return UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
 end
 
+-- FIXED: Enhanced initialization with proper ESP handling
 local function init()
     makeui()
-
+    pc()
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= localPlayer then
             setupPlayerListeners(pl)
@@ -4441,9 +4441,11 @@ local function init()
             setupPlayerListeners(pl)
         end
     end)
+    
     Players.PlayerRemoving:Connect(function(pl)
         cleanplrdata(pl)
     end)
+    
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= localPlayer then
             setupPlayerListeners(pl)
@@ -4461,6 +4463,7 @@ local function init()
             end
         end
     end
+    
     Players.PlayerAdded:Connect(function(pl)
         if pl ~= localPlayer then
             setupPlayerListeners(pl)
@@ -4480,6 +4483,7 @@ local function init()
             end
         end
     end)
+    
     RunService:BindToRenderStep("FOVhbUpdater_Modern", Enum.RenderPriority.First.Value, onRenderStep)
 
     if config.hotkeyConnection and config.hotkeyConnection.Connected then
@@ -4493,12 +4497,11 @@ local function init()
         if focused then return end
 
         if input.UserInputType == Enum.UserInputType.Keyboard then
-            local matched = false
             local keyName = keyNameFromInput(input)
             if keyName then
-                matched = applyKeybindAction(keyName)
+                local matched = applyKeybindAction(keyName)
+                if matched then return end
             end
-            if matched then return end
 
             local kc = input.KeyCode
             if kc == Enum.KeyCode.B and not isCtrlDown() and not UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and not UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
@@ -4525,7 +4528,6 @@ local function init()
             elseif kc == Enum.KeyCode.Z and isCtrlDown() then
                 config.espMasterEnabled = not config.espMasterEnabled
                 applyESPMaster(config.espMasterEnabled)
-                updateMobileGUI()
                 if config.espMasterEnabled then
                     safeNotify({
                         Title = "ESP Master",
@@ -4547,7 +4549,6 @@ local function init()
                 end
             elseif kc == Enum.KeyCode.F and isCtrlDown() then
                 config.autoFarmEnabled = not config.autoFarmEnabled
-                
                 if config.autoFarmEnabled then
                     autoFarmProcess()
                     safeNotify({
@@ -4571,13 +4572,16 @@ local function init()
                     })
                 end
             elseif kc == Enum.KeyCode.E and isCtrlDown() then
-                config.Enabled = not config.Enabled
-                updateMobileGUI()
-                if not config.Enabled then
+                config.startsa = not config.startsa
+                if not config.startsa then
                     if gui.RingHolder then
                         gui.RingHolder.Visible = false
                     end
+                    local targetsToRemove = {}
                     for pl, _ in pairs(config.activeApplied) do
+                        table.insert(targetsToRemove, pl)
+                    end
+                    for _, pl in ipairs(targetsToRemove) do
                         restorePartForPlayer(pl)
                     end
                     safeNotify({
@@ -4603,25 +4607,8 @@ local function init()
                     })
                 end
             elseif kc == Enum.KeyCode.Q and isCtrlDown() then
-                config.aimbotEnabled = not config.aimbotEnabled
-                updateMobileGUI()
-                
-                if config.aimbotEnabled and config.aimbot360Enabled then
-                    updateAimbotFOVRing()
-                elseif not config.aimbotEnabled then
-                    if config.aimbot360Enabled then
-                        toggle360Aimbot(false)
-                    end
-                end
-                
-                if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-                    config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled
-                end
-                
+                handleAimbotToggle(not config.aimbotEnabled)
                 if config.aimbotEnabled then
-                    if not config.aimbotFOVRing then
-                        aimbotfov()
-                    end
                     safeNotify({
                         Title = "Aimbot",
                         Content = "Enabled (Hotkey)",
@@ -4631,8 +4618,6 @@ local function init()
                         BarColor = Color3.fromRGB(0, 255, 0)
                     })
                 else
-                    config.aimbotCurrentTarget = nil
-                    updateESPColors()
                     safeNotify({
                         Title = "Aimbot",
                         Content = "Disabled (Hotkey)",
@@ -4665,7 +4650,6 @@ local function init()
                 end
             elseif kc == Enum.KeyCode.G and isCtrlDown() then
                 config.hitboxEnabled = not config.hitboxEnabled
-                updateMobileGUI()
                 if config.hitboxEnabled then
                     applyhb()
                     safeNotify({
@@ -4677,7 +4661,11 @@ local function init()
                         BarColor = Color3.fromRGB(0, 255, 0)
                     })
                 else
+                    local targetsToRemove = {}
                     for player, _ in pairs(config.hitboxExpandedParts) do
+                        table.insert(targetsToRemove, player)
+                    end
+                    for _, player in ipairs(targetsToRemove) do
                         restoreTorso(player)
                     end
                     safeNotify({
@@ -4692,7 +4680,6 @@ local function init()
             elseif kc == Enum.KeyCode.V and isCtrlDown() then
                 config.clientMasterEnabled = not config.clientMasterEnabled
                 applyClientMaster(config.clientMasterEnabled)
-                updateMobileGUI()
                 if config.clientMasterEnabled then
                     safeNotify({
                         Title = "Client Config",
@@ -4714,7 +4701,6 @@ local function init()
                 end
             elseif kc == Enum.KeyCode.L and isCtrlDown() then
                 config.antiAimEnabled = not config.antiAimEnabled
-                updateMobileGUI()
                 if not config.antiAimEnabled then
                     returnToOriginalPosition()
                     safeNotify({
@@ -4745,22 +4731,29 @@ local function cleanup()
         RunService:UnbindFromRenderStep("FOVhbUpdater_Modern")
     end)
     stopAutoFarm()
+    nomobgui()
     if config.hotkeyConnection then
         pcall(function() config.hotkeyConnection:Disconnect() end)
         config.hotkeyConnection = nil
     end
 
-    destroyMobileGUI()
-
     if config.aimbot360Enabled then
         toggle360Aimbot(false)
     end
 
+    local targetsToRemove = {}
     for pl, _ in pairs(config.espData) do
+        table.insert(targetsToRemove, pl)
+    end
+    for _, pl in ipairs(targetsToRemove) do
         removeESPLabel(pl)
     end
 
+    local targetsToRemoveHigh = {}
     for pl, _ in pairs(config.highlightData) do
+        table.insert(targetsToRemoveHigh, pl)
+    end
+    for _, pl in ipairs(targetsToRemoveHigh) do
         removeHighlightESP(pl)
     end
 
@@ -4784,7 +4777,7 @@ local function cleanup()
     end
 
     if gui.mobileGui and gui.mobileGui.ScreenGui then
-        gui.mobileGui.ScreenGui.Enabled = false
+        gui.mobileGui.ScreenGui:Destroy()
     end
 
     config.activeApplied = {}
