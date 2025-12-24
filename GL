@@ -8,8 +8,10 @@ local Workspace = game:GetService("Workspace")
 
 local localPlayer = Players.LocalPlayer
 local camera = workspace.CurrentCamera
-
+local aimbot360LoopRunning = false
+local aimbot360LoopTask = nil
 local gui = {}
+
 local patcher = true
 
 -- random stuff lololol
@@ -63,6 +65,11 @@ local config = {
     hitboxOriginalSizes = {},
     hitboxLastSize = {},
     hitboxColor = Color3.fromRGB(255, 255, 255),
+    smartHitboxEnabled = false,
+    smartHitboxDistanceCap = 30,
+    smartHitboxMinSize = 2,
+    smartHitboxMaxSize = 20,
+    smartHitboxBaseSize = 10,
     antiAimEnabled = false,
     raycastAntiAim = false,
     antiAimTPDistance = 3,
@@ -95,6 +102,7 @@ local config = {
     gp = 200,
     aimbot360Omnidirectional = true,
     aimbot360BehindRange = 180,
+    aimbot360WasEnabled = false,
     masterTarget = "Players",
     clientMasterEnabled = false,
     clientWalkSpeed = 16,
@@ -125,11 +133,48 @@ local config = {
         hitbox = "G",
         esp = "Z",
         client = "V",
-    }
+        silentaimwallcheck = "B",
+        aimbotwallcheck = "H",
+    },
+    holdkeyToggle = {
+        enabled = false,
+        modifier = "RCtrl"
+    },
+    holdkeystates = {}
 }
+local function isHoldKeyDown()
+    if not config.holdkeyToggle.enabled then
+        return true
+    end
+    local modifier = config.holdkeyToggle.modifier or "RCtrl"
+    
+    if modifier == "RCtrl" then
+        return UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    elseif modifier == "LCtrl" then
+        return UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+    elseif modifier == "RShift" then
+        return UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+    elseif modifier == "LShift" then
+        return UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+    end
+    
+    return false
+end
 
--- Load Rayfield UI Library
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local function canTriggerKeybind()
+    if config.holdkeyToggle.enabled then
+        return isHoldKeyDown()
+    end
+    return true
+end
+
+local function updateHoldkeyState()
+    if not config.holdkeyToggle.enabled then
+        config.holdkeyStates = {}
+    end
+end
+
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/x2zu/OPEN-SOURCE-UI-ROBLOX/refs/heads/main/X2ZU%20UI%20ROBLOX%20OPEN%20SOURCE/DummyUi-leak-by-x2zu/fetching-main/Tools/Framework.luau"))()
 local Alurt = loadstring(game:HttpGet("https://raw.githubusercontent.com/azir-py/project/refs/heads/main/Zwolf/AlurtUI.lua"))()
 
 local function safeNotify(opts)
@@ -161,7 +206,6 @@ if not math.clamp then
     end
 end
 
--- FIXED: Updated team target modes with proper synchronization
 local function updateTeamTargetModes()
     local masterTeamSelection = config.masterTeamTarget or "Enemies"
     
@@ -181,7 +225,6 @@ local function updateTeamTargetModes()
         config.antiAimGetTarget = config.masterGetTarget
     end
 
-    -- Refresh ESP for all targets
     if config.espMasterEnabled then
         local targetsToRemove = {}
         for target, _ in pairs(config.espData) do
@@ -211,15 +254,9 @@ local function updateTeamTargetModes()
             end
         end
     end
-    
-    -- Refresh hitboxes
     applyhb()
-    
-    -- Clear current targets
     config.aimbotCurrentTarget = nil
     config.currentTarget = nil
-    
-    -- Update ESP colors
     updateESPColors()
 end
 
@@ -1450,9 +1487,38 @@ local function applyESPMaster(state)
     updateESPColors()
 end
 
-local function removeAllFaceDecals()
+local function d()
     for _, target in ipairs(getAllTargets()) do
         RFD(target)
+    end
+end
+
+local function espRefresher()
+    if not config.espMasterEnabled then return end
+    
+    -- Refresh ESP for all targets
+    local currentESPData = {}
+    for target, data in pairs(config.espData) do
+        currentESPData[target] = true
+    end
+    
+    for _, target in ipairs(getAllTargets()) do
+        if addesp(target) then
+            if not currentESPData[target] then
+                if config.prefTextESP or config.prefBoxESP or config.prefHealthESP or config.prefHeadDotESP then
+                    makeesp(target)
+                end
+                if config.prefHighlightESP and getTargetCharacter(target) then
+                    high(target)
+                end
+            end
+        else
+            -- Remove ESP if target is no longer valid
+            if currentESPData[target] then
+                removeESPLabel(target)
+                removeHighlightESP(target)
+            end
+        end
     end
 end
 
@@ -1597,11 +1663,16 @@ local function tnormalsize(targetPlayer)
         }
     end
 end
-
 local function expandhb(targetPlayer, size)
     if not targetPlayer then return end
     if targetPlayer == localPlayer then return end
     if not plralive(targetPlayer) then return end  
+    
+    -- Check if hitbox is enabled at the time of expansion
+    if not config.hitboxEnabled then 
+        restoreTorso(targetPlayer)
+        return 
+    end
 
     local char = getTargetCharacter(targetPlayer)
     if not char then return end
@@ -1609,14 +1680,25 @@ local function expandhb(targetPlayer, size)
     if not torso then return end  
 
     tnormalsize(targetPlayer)
-    local expansionSize = Vector3.new(size, size, size)
+    
+    -- Use smart hitbox calculation if enabled
+    local expansionSize
+    if config.smartHitboxEnabled then
+        local smartSize = calculateSmartHitboxSize(targetPlayer)
+        expansionSize = Vector3.new(smartSize, smartSize, smartSize)
+    else
+        expansionSize = Vector3.new(size, size, size)
+    end
+    
     config.hitboxLastSize[targetPlayer] = size
 
     config.hitboxExpandedParts[targetPlayer] = {
         part = torso,
-        targetSize = expansionSize
+        targetSize = expansionSize,
+        originalSize = config.hitboxOriginalSizes[targetPlayer] and config.hitboxOriginalSizes[targetPlayer].size or torso.Size
     }
     
+    -- Always check config.hitboxEnabled before applying
     if config.hitboxEnabled then
         pcall(function()
             torso.Size = expansionSize
@@ -1631,7 +1713,6 @@ local function expandhb(targetPlayer, size)
         end)
     end
 end
-
 local function restoreTorso(targetPlayer)
     if not targetPlayer then return end  
 
@@ -1640,14 +1721,13 @@ local function restoreTorso(targetPlayer)
         pcall(function()
             original.part.Size = original.size
             original.part.Transparency = 0
-            original.part.CanCollide = true
+            original.part.CanCollide = false
         end)
     end
 
     config.hitboxExpandedParts[targetPlayer] = nil
     config.hitboxOriginalSizes[targetPlayer] = nil
 end
-
 local function updateHitboxes()
     if not config.hitboxEnabled then  
         local targetsToRemove = {}
@@ -1662,17 +1742,26 @@ local function updateHitboxes()
 
     local targetsToRemove = {}
     for player, data in pairs(config.hitboxExpandedParts) do
-        if not player or not plralive(player) or not getTargetCharacter(player) then
+        if not player or not getTargetCharacter(player) then
             table.insert(targetsToRemove, player)
         else
-            local torso = getTargetCharacter(player):FindFirstChild("Torso") or getTargetCharacter(player):FindFirstChild("UpperTorso")
-            if torso and data.targetSize then
-                pcall(function()
-                    torso.Size = data.targetSize
-                    torso.Transparency = 0.9
-                    torso.CanCollide = false
-                    torso.Massless = true
-                end)
+            if not plralive(player) then
+                -- Player is dead, restore to normal size
+                restoreTorso(player)
+                table.insert(targetsToRemove, player)
+            else
+                local torso = getTargetCharacter(player):FindFirstChild("Torso") or getTargetCharacter(player):FindFirstChild("UpperTorso")
+                if torso and data.targetSize then
+                    pcall(function()
+                        torso.Size = data.targetSize
+                        torso.Transparency = 0.9
+                        torso.CanCollide = false
+                        torso.Massless = true
+                    end)
+                else
+                    -- Torso not found, player might have respawned
+                    table.insert(targetsToRemove, player)
+                end
             end
         end
     end
@@ -1705,20 +1794,39 @@ local function targethb(player)
 
     return false
 end
-
 local function applyhb()
-    if not config.hitboxEnabled then return end  
+    -- Don't apply if hitbox is disabled
+    if not config.hitboxEnabled then 
+        local targetsToRemove = {}
+        for player, _ in pairs(config.hitboxExpandedParts) do
+            table.insert(targetsToRemove, player)
+        end
+        for _, player in ipairs(targetsToRemove) do
+            restoreTorso(player)
+        end
+        return 
+    end
 
+    -- Apply hitboxes to all valid targets
     for _, target in ipairs(getAllTargets()) do  
         if targethb(target) then
             local size = config.hitboxSize
-            config.hitboxLastSize[target] = size
-            expandhb(target, size)
+            if config.smartHitboxEnabled then
+                size = calculateSmartHitboxSize(target)
+            end
+            
+            -- Only apply if not already applied or size changed
+            local existing = config.hitboxExpandedParts[target]
+            if not existing or existing.targetSize.X ~= size then
+                config.hitboxLastSize[target] = size
+                expandhb(target, size)
+            end
         else
             restoreTorso(target)
         end
     end
 end
+
 
 local function hb()
     local targetsToRemove = {}
@@ -1757,6 +1865,98 @@ local function hb()
     end
     
     updateHitboxes()
+end
+
+local function handleHitboxForRespawnedPlayer(player)
+    if not config.hitboxEnabled then return end
+    
+    -- Wait for character to load
+    if player.Character then
+        task.wait(0.5) -- Small delay to ensure character is fully loaded
+        
+        local char = player.Character
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            -- Restore original size if player died
+            if config.hitboxOriginalSizes[player] and config.hitboxOriginalSizes[player].part and config.hitboxOriginalSizes[player].part.Parent then
+                restoreTorso(player)
+            end
+            
+            -- Re-apply hitbox if player is alive and should be targeted
+            if humanoid.Health > 0 and targethb(player) then
+                expandhb(player, config.hitboxSize)
+            end
+            
+            -- Setup death listener for this character
+            humanoid.Died:Connect(function()
+                if config.hitboxEnabled then
+                    restoreTorso(player)
+                end
+            end)
+        end
+    end
+end
+local function calculateSmartHitboxSize(targetPlayer)
+    if not targetPlayer or targetPlayer == localPlayer then 
+        return config.hitboxSize 
+    end
+    
+    local localChar = localPlayer.Character
+    local targetChar = getTargetCharacter(targetPlayer)
+    if not localChar or not targetChar then 
+        return config.hitboxSize 
+    end
+    
+    local localRoot = localChar:FindFirstChild("HumanoidRootPart") or localChar:FindFirstChild("Head")
+    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Head")
+    if not localRoot or not targetRoot then 
+        return config.hitboxSize 
+    end
+    
+    -- Calculate distance
+    local distance = (localRoot.Position - targetRoot.Position).Magnitude
+    
+    -- Use different calculation based on distance
+    local adjustedSize
+    
+    if distance <= config.smartHitboxDistanceCap then
+        -- When within distance cap, scale from min to base size
+        local ratio = math.clamp(distance / config.smartHitboxDistanceCap, 0, 1)
+        adjustedSize = config.smartHitboxMinSize + (config.smartHitboxBaseSize - config.smartHitboxMinSize) * ratio
+        
+        -- Ensure minimum of 2 studs when very close (for consistency)
+        if distance < 5 then
+            adjustedSize = math.max(adjustedSize, 2)
+        end
+    else
+        -- When beyond distance cap, use base size
+        adjustedSize = config.smartHitboxBaseSize
+    end
+    
+    -- Clamp to min/max
+    adjustedSize = math.clamp(adjustedSize, config.smartHitboxMinSize, config.smartHitboxMaxSize)
+    
+    return adjustedSize
+end
+
+local function updateSmartHitboxes()
+    -- FIXED: Check if hitbox is enabled
+    if not config.hitboxEnabled or not config.smartHitboxEnabled then return end
+    
+    for player, data in pairs(config.hitboxExpandedParts) do
+        if player and plralive(player) and getTargetCharacter(player) and targethb(player) then
+            local newSize = calculateSmartHitboxSize(player)
+            if data.targetSize.X ~= newSize then
+                data.targetSize = Vector3.new(newSize, newSize, newSize)
+                local torso = getTargetCharacter(player):FindFirstChild("Torso") or getTargetCharacter(player):FindFirstChild("UpperTorso")
+                if torso then
+                    pcall(function()
+                        torso.Size = data.targetSize
+                    end)
+                end
+            end
+        end
+    end
 end
 
 local function shouldTargetAimbot(target)
@@ -1972,17 +2172,37 @@ end
 
 local function updateAimbotFOVRing()
     if config.aimbotFOVRing and config.aimbotFOVRing.RingFrame then
-        if config.aimbot360Enabled or not config.aimbotEnabled then
+        if config.aimbot360Enabled and config.aimbotEnabled then
             config.aimbotFOVRing.RingFrame.Visible = false
-        else
+        elseif config.aimbotEnabled then
             config.aimbotFOVRing.RingFrame.Size = UDim2.new(0, config.aimbotFOVSize * 2, 0, config.aimbotFOVSize * 2)
             config.aimbotFOVRing.RingFrame.Position = UDim2.new(0.5, 0, 0.5, -28)
             config.aimbotFOVRing.RingFrame.Visible = true
+        else
+            config.aimbotFOVRing.RingFrame.Visible = false
         end
     end
 end
+local function aimbot360UpdateLoop()
+    if aimbot360LoopRunning then
+        return
+    end
 
--- FIXED: 360 Aimbot now properly respects main aimbot toggle
+    if not config.aimbotEnabled or not config.aimbot360Enabled then
+        return
+    end
+
+    aimbot360LoopRunning = true
+    aimbot360LoopTask = task.spawn(function()
+        while aimbot360LoopRunning and config.aimbotEnabled and config.aimbot360Enabled do
+            aimbotUpdate()
+            task.wait(0.1)
+        end
+
+        aimbot360LoopRunning = false
+        aimbot360LoopTask = nil
+    end)
+end
 local function toggle360Aimbot(state)
     if state then
         if not config.aimbotEnabled then
@@ -1998,13 +2218,18 @@ local function toggle360Aimbot(state)
             return
         end
 
+        if not config.aimbot360OriginalFOV then
+            config.aimbot360OriginalFOV = config.aimbotFOVSize
+        end
+        
         config.aimbot360Enabled = true
-        config.aimbot360OriginalFOV = config.aimbotFOVSize
+        config.aimbotFOVSize = math.huge
         updateAimbotFOVRing()
+        aimbot360UpdateLoop()
 
         safeNotify({
             Title = "360° Aimbot",
-            Content = "Enabled - Targeting in all directions",
+            Content = "Enabled - Targeting in all directions (0.1s updates)",
             Audio = "rbxassetid://17208361335",
             Length = 2,
             Image = "rbxassetid://4483362458",
@@ -2013,9 +2238,15 @@ local function toggle360Aimbot(state)
     else
         if config.aimbot360OriginalFOV then
             config.aimbotFOVSize = config.aimbot360OriginalFOV
+            config.aimbot360OriginalFOV = nil
         end
+        
         config.aimbot360Enabled = false
         updateAimbotFOVRing()
+        aimbot360LoopRunning = false
+        if aimbot360LoopTask then
+            aimbot360LoopTask = nil
+        end
 
         safeNotify({
             Title = "360° Aimbot",
@@ -2027,19 +2258,68 @@ local function toggle360Aimbot(state)
         })
     end
 end
-
--- FIXED: Ensure 360 aimbot is disabled when main aimbot is toggled off
 local function handleAimbotToggle(state)
     config.aimbotEnabled = state
-    if not state and config.aimbot360Enabled then
-        toggle360Aimbot(false)
+    
+    if state then
+        if not config.aimbotFOVRing then
+            aimbotfov()
+        end
+        
+        if config.aimbot360Enabled then
+            config.aimbotFOVSize = math.huge
+            updateAimbotFOVRing()
+            aimbot360UpdateLoop()
+        end
+    else
+        if config.aimbot360Enabled then
+            aimbot360LoopRunning = false
+            if aimbot360LoopTask then
+                aimbot360LoopTask = nil
+            end
+        end
     end
+    
     updateAimbotFOVRing()
+end
+
+
+local function aimbot360UpdateLoop()
+    if aimbot360LoopRunning then
+        return
+    end
+
+    if not config.aimbotEnabled then
+        return
+    end
+
+    if not config.aimbot360Enabled then
+        config.aimbot360Enabled = true
+    end
+
+    aimbot360LoopRunning = true
+
+    aimbot360LoopTask = task.spawn(function()
+        while aimbot360LoopRunning do
+            if config.aimbotEnabled and config.aimbot360Enabled then
+                aimbotUpdate()
+            else
+                aimbot360LoopRunning = false
+                break
+            end
+
+            task.wait(0.1)
+        end
+
+        aimbot360LoopRunning = false
+        aimbot360LoopTask = nil
+    end)
 end
 
 RunService.Heartbeat:Connect(hb)
 RunService.RenderStepped:Connect(aimbotUpdate)
 RunService.Heartbeat:Connect(antiAimUpdate)
+RunService.Heartbeat:Connect(updateSmartHitboxes)
 
 local function isMobileDevice()
     local ok, val = pcall(function() return UserInputService.TouchEnabled end)
@@ -2055,7 +2335,6 @@ local function nomobgui()
     gui.mobileGui = nil
 end
 
--- FIXED: Mobile GUI now properly updates config values
 local function createMobileGUIElements()
     if gui.mobileGui and gui.mobileGui.ScreenGui and gui.mobileGui.ScreenGui.Parent then
         gui.mobileGui.ScreenGui.Enabled = true
@@ -2289,7 +2568,6 @@ local function createMobileGUIElements()
                     end
                 else
                     if gui.RingHolder then gui.RingHolder.Visible = true end
-                    lrfd()
                 end
             elseif name == "Aimbot" then
                 handleAimbotToggle(newState)
@@ -2406,9 +2684,7 @@ local function createMobileGUIElements()
         config.aimbotFOVRing.RingFrame.Visible = config.aimbotEnabled and not config.aimbot360Enabled
     end
 end
-
--- FIXED: Mobile GUI now properly updates when config changes
-local function updateMobileGUI()
+local function updatemobgui()
     if not isMobileDevice() then
         if gui.mobileGui and gui.mobileGui.ScreenGui then
             gui.mobileGui.ScreenGui.Enabled = false
@@ -2422,73 +2698,55 @@ local function updateMobileGUI()
         end
         return
     end
-    
-    if not gui.mobileGui then
+    if not gui.mobileGui or not gui.mobileGui.ScreenGui or not gui.mobileGui.ScreenGui.Parent then
         createMobileGUIElements()
-    elseif gui.mobileGui and gui.mobileGui.ScreenGui then
-        gui.mobileGui.ScreenGui.Enabled = true
+        return
+    end
+    
+    gui.mobileGui.ScreenGui.Enabled = true
+    
+    if gui.mobileGui.Buttons then
+        local buttons = {
+            SilentAim = config.startsa,
+            Aimbot = config.aimbotEnabled,
+            AutoFarm = config.autoFarmEnabled,
+            AntiAim = config.antiAimEnabled,
+            Hitbox = config.hitboxEnabled,
+            ClientConfig = config.clientMasterEnabled,
+            ESP = config.espMasterEnabled
+        }
         
-        if gui.mobileGui.Buttons then
-            local b = gui.mobileGui.Buttons
-            
-            if b.SilentAim and b.SilentAim.Button then
-                b.SilentAim.Button.BackgroundColor3 = config.startsa and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.SilentAim.Stroke then
-                    b.SilentAim.Stroke.Color = config.startsa and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
+        for buttonName, isEnabled in pairs(buttons) do
+            local buttonData = gui.mobileGui.Buttons[buttonName]
+            if buttonData and buttonData.Button then
+                local btn = buttonData.Button
+                local stroke = buttonData.Stroke
+                
+                btn.BackgroundColor3 = isEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
+                
+                if stroke then
+                    stroke.Color = isEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
                 end
-            end
-            
-            if b.Aimbot and b.Aimbot.Button then
-                b.Aimbot.Button.BackgroundColor3 = config.aimbotEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.Aimbot.Stroke then
-                    b.Aimbot.Stroke.Color = config.aimbotEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
-                end
-            end
-            
-            if b.AutoFarm and b.AutoFarm.Button then
-                b.AutoFarm.Button.BackgroundColor3 = config.autoFarmEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.AutoFarm.Stroke then
-                    b.AutoFarm.Stroke.Color = config.autoFarmEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
-                end
-            end
-            
-            if b.AntiAim and b.AntiAim.Button then
-                b.AntiAim.Button.BackgroundColor3 = config.antiAimEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.AntiAim.Stroke then
-                    b.AntiAim.Stroke.Color = config.antiAimEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
-                end
-            end
-            
-            if b.Hitbox and b.Hitbox.Button then
-                b.Hitbox.Button.BackgroundColor3 = config.hitboxEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.Hitbox.Stroke then
-                    b.Hitbox.Stroke.Color = config.hitboxEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
-                end
-            end
-            
-            if b.ClientConfig and b.ClientConfig.Button then
-                b.ClientConfig.Button.BackgroundColor3 = config.clientMasterEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.ClientConfig.Stroke then
-                    b.ClientConfig.Stroke.Color = config.clientMasterEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
-                end
-            end
-            
-            if b.ESP and b.ESP.Button then
-                b.ESP.Button.BackgroundColor3 = config.espMasterEnabled and Color3.fromRGB(40, 120, 220) or Color3.fromRGB(40, 40, 50)
-                if b.ESP.Stroke then
-                    b.ESP.Stroke.Color = config.espMasterEnabled and Color3.fromRGB(60, 140, 240) or Color3.fromRGB(60, 60, 70)
+                
+                if buttonName == "SilentAim" then
+                    btn.Text = isEnabled and "SilentAim ✓" or "SilentAim"
+                elseif buttonName == "Aimbot" then
+                    btn.Text = isEnabled and "Aimbot ✓" or "Aimbot"
+                elseif buttonName == "AutoFarm" then
+                    btn.Text = isEnabled and "AutoFarm ✓" or "AutoFarm"
+                elseif buttonName == "AntiAim" then
+                    btn.Text = isEnabled and "AntiAim ✓" or "AntiAim"
+                elseif buttonName == "Hitbox" then
+                    btn.Text = isEnabled and "Hitbox ✓" or "Hitbox"
+                elseif buttonName == "ClientConfig" then
+                    btn.Text = isEnabled and "Client Config ✓" or "Client Config"
+                elseif buttonName == "ESP" then
+                    btn.Text = isEnabled and "ESP ✓" or "ESP"
                 end
             end
         end
     end
 end
-
-task.spawn(function()
-    while patcher do
-        updateMobileGUI()
-        task.wait(0.1)
-    end
-end)
 
 local function onRenderStep()
     if not camera or not camera.Parent then
@@ -2718,20 +2976,38 @@ local function normalizeKeyString(k)
     if matchName then return matchName:upper() end
     return s:upper()
 end
-
--- FIXED: Keybinds now work properly
-local function applyKeybindAction(key)
+local function applyKeybindAction(key, fromHotkeySystem)
     local keyUpper = normalizeKeyString(key)
     if not keyUpper then return false end
     
+    local isMobile = isMobileDevice()
+    local guiOpen = gui.mobileGui and gui.mobileGui.ScreenGui and gui.mobileGui.ScreenGui.Enabled
+    
+    if isMobile and guiOpen and gui.mobileGui.Frame and gui.mobileGui.Frame.Size.Y.Offset > 100 then
+        return false
+    end
+    if fromHotkeySystem and config.holdkeyToggle.enabled then
+        if not isHoldKeyDown() then
+            return false
+        end
+    end
+    
     for action, bound in pairs(config.keybinds) do
         if bound and normalizeKeyString(bound) == keyUpper then
+            local currentTime = tick()
+            local lastTrigger = config.holdkeyStates[action] or 0
+            
+            if currentTime - lastTrigger < 0.2 then
+                return true
+            end
+            
+            config.holdkeyStates[action] = currentTime
+            local source = fromHotkeySystem and "Keybind" or "UI"
+            
             if action == "silentaim" then
                 config.startsa = not config.startsa
                 if not config.startsa then
-                    if gui.RingHolder then
-                        gui.RingHolder.Visible = false
-                    end
+                    if gui.RingHolder then gui.RingHolder.Visible = false end
                     local targetsToRemove = {}
                     for pl, _ in pairs(config.activeApplied) do
                         table.insert(targetsToRemove, pl)
@@ -2739,41 +3015,112 @@ local function applyKeybindAction(key)
                     for _, pl in ipairs(targetsToRemove) do
                         restorePartForPlayer(pl)
                     end
-                    safeNotify({Title="SilentAim", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                    safeNotify({
+                        Title = "SilentAim", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 else
                     if gui.RingHolder then gui.RingHolder.Visible = true end
-                    lrfd()
-                    safeNotify({Title="SilentAim", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
+                    safeNotify({
+                        Title = "SilentAim", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 255, 0)
+                    })
                 end
+                updatemobgui()
+                return true
             elseif action == "aimbot" then
+                local wasEnabled = config.aimbotEnabled
                 handleAimbotToggle(not config.aimbotEnabled)
-                if config.aimbotEnabled then
-                    safeNotify({Title="Aimbot", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
-                else
-                    safeNotify({Title="Aimbot", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                if config.aimbotEnabled and not wasEnabled then
+                    safeNotify({
+                        Title = "Aimbot", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 255, 0)
+                    })
+                elseif not config.aimbotEnabled and wasEnabled then
+                    safeNotify({
+                        Title = "Aimbot", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 end
+                updatemobgui()
+                return true
             elseif action == "autofarm" then
                 config.autoFarmEnabled = not config.autoFarmEnabled
                 if config.autoFarmEnabled then
                     autoFarmProcess()
-                    safeNotify({Title="AutoFarm", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
+                    safeNotify({
+                        Title = "AutoFarm", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 255, 0)
+                    })
                 else
                     stopAutoFarm()
-                    safeNotify({Title="AutoFarm", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                    safeNotify({
+                        Title = "AutoFarm", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 end
+                updatemobgui()
+                return true
             elseif action == "antiaim" then
                 config.antiAimEnabled = not config.antiAimEnabled
                 if not config.antiAimEnabled then
                     returnToOriginalPosition()
-                    safeNotify({Title="AntiAim", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                    safeNotify({
+                        Title = "AntiAim", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 else
-                    safeNotify({Title="AntiAim", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
+                    safeNotify({
+                        Title = "AntiAim", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 100, 0)
+                    })
                 end
+                updatemobgui()
+                return true
             elseif action == "hitbox" then
                 config.hitboxEnabled = not config.hitboxEnabled
                 if config.hitboxEnabled then
                     applyhb()
-                    safeNotify({Title="Hitbox", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,255,0)})
+                    safeNotify({
+                        Title = "Hitbox", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 255, 0)
+                    })
                 else
                     local targetsToRemove = {}
                     for player, _ in pairs(config.hitboxExpandedParts) do
@@ -2782,32 +3129,115 @@ local function applyKeybindAction(key)
                     for _, player in ipairs(targetsToRemove) do
                         restoreTorso(player)
                     end
-                    safeNotify({Title="Hitbox", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                    safeNotify({
+                        Title = "Hitbox", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 end
+                updatemobgui()
+                return true
             elseif action == "esp" then
                 config.espMasterEnabled = not config.espMasterEnabled
                 applyESPMaster(config.espMasterEnabled)
                 if config.espMasterEnabled then
-                    safeNotify({Title="ESP", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,170,255)})
+                    safeNotify({
+                        Title = "ESP Master", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 170, 255)
+                    })
                 else
-                    safeNotify({Title="ESP", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                    safeNotify({
+                        Title = "ESP Master", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 end
+                updatemobgui()
+                return true
             elseif action == "client" then
                 config.clientMasterEnabled = not config.clientMasterEnabled
                 applyClientMaster(config.clientMasterEnabled)
                 if config.clientMasterEnabled then
-                    safeNotify({Title="Client Config", Content="Enabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(0,170,255)})
+                    safeNotify({
+                        Title = "Client Config", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 170, 255)
+                    })
                 else
-                    safeNotify({Title="Client Config", Content="Disabled (Keybind)", Length=1, Image="rbxassetid://4483362458", BarColor=Color3.fromRGB(255,0,0)})
+                    safeNotify({
+                        Title = "Client Config", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
                 end
+                updatemobgui()
+                return true
+            elseif action == "silentaimwallcheck" then
+                config.wallc = not config.wallc
+                if config.wallc then
+                    safeNotify({
+                        Title = "SilentAim Wall Check", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 170, 255)
+                    })
+                else
+                    safeNotify({
+                        Title = "SilentAim Wall Check", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
+                end
+                return true
+            elseif action == "aimbotwallcheck" then
+                config.aimbotWallCheck = not config.aimbotWallCheck
+                if config.aimbotWallCheck then
+                    safeNotify({
+                        Title = "Aimbot Wall Check", 
+                        Content = "Enabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(0, 170, 255)
+                    })
+                else
+                    safeNotify({
+                        Title = "Aimbot Wall Check", 
+                        Content = "Disabled (" .. source .. ")",
+                        Audio = "rbxassetid://17208361335",
+                        Length = 1, 
+                        Image = "rbxassetid://4483362458", 
+                        BarColor = Color3.fromRGB(255, 0, 0)
+                    })
+                end
+                return true
             end
-            return true
         end
     end
     return false
 end
 
--- FIXED: ESP now properly handles player respawns, joins, and team changes
 local function setupDeathListener(targetPlayer)
     local char = getTargetCharacter(targetPlayer)
     if not char then return end
@@ -2876,8 +3306,6 @@ local function cleanplrdata(targetPlayer)
         updateESPColors()
     end
 end
-
--- FIXED: Enhanced player listener setup for ESP
 local function setupPlayerListeners(pl)
     if pl == localPlayer then return end
     if config.playerConnections[pl] then
@@ -2910,11 +3338,19 @@ local function setupPlayerListeners(pl)
     updateESPForPlayer()
     
     local charAddedConn = pl.CharacterAdded:Connect(function(char)
-        task.wait(0.25)
+        task.wait(0.5) -- Wait for character to fully load
+        
         setupDeathListener(pl)
         removeESPLabel(pl)
         removeHighlightESP(pl)
         task.wait(0.1)
+        
+        -- FIXED: Apply hitbox to respawned player if hitbox is enabled
+        if config.hitboxEnabled and targethb(pl) then
+            -- Wait a bit more for character to fully initialize
+            task.wait(0.2)
+            expandhb(pl, config.hitboxSize)
+        end
         
         if config.espMasterEnabled then
             if config.prefTextESP or config.prefBoxESP or config.prefHealthESP or config.prefHeadDotESP then
@@ -2935,20 +3371,35 @@ local function setupPlayerListeners(pl)
     local charRemovingConn = pl.CharacterRemoving:Connect(function(char)
         removeESPLabel(pl)
         removeHighlightESP(pl)
+        -- FIXED: Clean up hitbox when character is removed
+        restoreTorso(pl)
     end)
     table.insert(config.playerConnections[pl], charRemovingConn)
     
     local teamChangedConn = pl:GetPropertyChangedSignal("Team"):Connect(function()
         task.wait(0.05)
         updateESPForPlayer()
+        -- Update hitbox if team target mode changes
+        if config.hitboxEnabled then
+            if targethb(pl) then
+                expandhb(pl, config.hitboxSize)
+            else
+                restoreTorso(pl)
+            end
+        end
     end)
     table.insert(config.playerConnections[pl], teamChangedConn)
     
+    -- FIXED: Better initial hitbox application
     if pl.Character then
         setupDeathListener(pl)
+        -- Apply hitbox if needed
+        if config.hitboxEnabled and targethb(pl) then
+            task.wait(0.1) -- Small delay for character initialization
+            expandhb(pl, config.hitboxSize)
+        end
     end
 end
-
 local function safeGetCharacter()
     if not localPlayer then return nil end
     local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
@@ -3105,230 +3556,110 @@ local function applyClientMaster(state)
     end
 end
 
-local function makeui()
-    -- Create Rayfield Window
-    local Window = Rayfield:CreateWindow({
-        Name = "Gravel.cc",
-        LoadingTitle = "Gravel.cc",
-        LoadingSubtitle = "by hmmm5651",
-        Theme = "AmberGlow",
-        ShowText = "Gravel :o",
-        ToggleUIKeybind = "K",
-        ConfigurationSaving = {
-            Enabled = false,
-            FolderName = nil,
-            FileName = "HBSS"
-        },
-        Discord = {
-            Enabled = false,
-            Invite = "noinvitelink",
-            RememberJoins = true
-        },
-        KeySystem = false
-    })
+local isPC = not UserInputService.TouchEnabled
+local dang = isPC and UDim2.new(0, 600, 0, 450) or UDim2.new(0.7, 0, 0.9, 0)
 
-    local MainTab = Window:CreateTab("Main", 4483362458)
-    local ClientTab = Window:CreateTab("Client", 4483362458)
-    local SilentAimTab = Window:CreateTab("SilentAim", 4483362458)
-    local VisualsTab = Window:CreateTab("Visuals", 4483362458)
-    local AimbotTab = Window:CreateTab("Aimbot", 4483362458)
-    local HitboxTab = Window:CreateTab("Hitbox", 4483362458)
-    local AntiAimTab = Window:CreateTab("AntiAim", 4483362458)
+local Window = Library:Window({
+    Title = "Gravel.cc",
+    Desc = "by hmmm5651",
+    Icon = 132214308111067,
+    Theme = "Dark",
+    Config = {
+        Keybind = Enum.KeyCode.K,
+        Size = dang,
+    },
+    CloseUIButton = {
+        Enabled = true,
+        Text = "Gravel.cc",
+    }
+})
 
-    -- MainTab
-    MainTab:CreateDropdown({
-        Name = "Master Team Target",
-        Options = {"Enemies", "Teams", "All"},
-        CurrentOption = "Enemies",
-        Flag = "MasterTeamTarget",
+-- Main Tab
+local MainTab = Window:Tab({Title = "Main", Icon = "folder"}) do
+    MainTab:Section({Title = "Master Settings"})
+    
+    MainTab:Dropdown({
+        Title = "Master Team Target",
+        Desc = "Select target team preference",
+        List = {"Enemies", "Teams", "All"},
+        Value = "Enemies",
         Callback = function(Option)
             config.masterTeamTarget = Option
             config.targetMode = Option
             config.aimbotTeamTarget = Option
             config.hitboxTeamTarget = Option
-        end,
+        end
     })
-
-    MainTab:CreateDropdown({
-        Name = "Master Target",
-        Options = {"Players", "NPCs", "Both"},
-        CurrentOption = "Players",
-        Flag = "MasterTarget",
+    MainTab:Dropdown({
+        Title = "Master Target",
+        Desc = "Select target type",
+        List = {"Players", "NPCs", "Both"},
+        Value = "Players",
         Callback = function(Option)
             config.masterTarget = Option
-        end,
+        end
     })
-
-    MainTab:CreateDropdown({
-        Name = "Master GetTarget",
-        Options = {"Closest", "Lowest Health"},
-        CurrentOption = "Closest",
-        Flag = "MasterGetTarget",
+    
+    MainTab:Dropdown({
+        Title = "Master GetTarget",
+        Desc = "Target selection method",
+        List = {"Closest", "Lowest Health"},
+        Value = "Closest",
         Callback = function(Option)
             config.masterGetTarget = Option
             config.aimbotGetTarget = Option
             config.silentGetTarget = Option
             config.antiAimGetTarget = Option
-        end,
+        end
     })
     
-    MainTab:CreateToggle({
-        Name = "Toggle Mobile GUI",
-        CurrentValue = false,
-        Flag = "MobileGUIToggle",
-        Callback = function(Value)
-            config.mobgui = Value
-            if not Value then
-                nomobgui()
-            end
-        end,
-    })
+    MainTab:Section({Title = "Utilities"})
     
-    MainTab:CreateButton({
-        Name = "Reset Mobile GUI Position",
-        Callback = function()
-            if gui.mobileGui and gui.mobileGui.Frame then
-                local frame = gui.mobileGui.Frame
-                frame.Position = UDim2.new(1, -10, 1, -10)
-                if gui.mobileGui.MinimizeButton then
-                    gui.mobileGui.MinimizeButton.Text = "▲"
-                end
-                gui.mobileGui.IsMinimized = true
+    MainTab:Toggle({
+        Title = "Toggle AutoFarm ('F')",
+        Desc = "Enable/disable auto farm",
+        Value = config.autoFarmEnabled or false,
+        Callback = function(v)
+            config.autoFarmEnabled = v
+            if v then
+                autoFarmProcess()
                 safeNotify({
-                    Title = "Mobile GUI",
-                    Content = "Position reset",
+                    Title = "AutoFarm",
+                    Content = "Enabled",
                     Audio = "rbxassetid://17208361335",
-                    Length = 1,
+                    Length = 2,
                     Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
+                    BarColor = Color3.fromRGB(0, 255, 0)
                 })
             else
+                stopAutoFarm()
                 safeNotify({
-                    Title = "Mobile GUI",
-                    Content = "Mobile GUI not present",
+                    Title = "AutoFarm",
+                    Content = "Disabled",
                     Audio = "rbxassetid://17208361335",
                     Length = 1,
                     Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 100, 0)
+                    BarColor = Color3.fromRGB(255, 0, 0)
                 })
             end
-        end,
+        end
     })
 
-    MainTab:CreateKeybind({
-        Name = "SilentAim Keybind",
-        CurrentKeybind = "E",
-        HoldToInteract = false,
-        Flag = "SilentAimKeybind",
-        Callback = function(Key)
-            config.keybinds.silentaim = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned SilentAim: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
+    MainTab:Toggle({
+        Title = "Toggle Mobile GUI",
+        Desc = "Show/hide mobile GUI",
+        Value = config.mobgui or false,
+        Callback = function(v)
+            config.mobgui = v
+            if not v then
+                nomobgui()
+            end
+        end
     })
-
-    MainTab:CreateKeybind({
-        Name = "Aimbot Keybind",
-        CurrentKeybind = "Q",
-        HoldToInteract = false,
-        Flag = "AimbotKeybind",
-        Callback = function(Key)
-            config.keybinds.aimbot = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned Aimbot: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "AutoFarm Keybind",
-        CurrentKeybind = "F",
-        HoldToInteract = false,
-        Flag = "AutoFarmKeybind",
-        Callback = function(Key)
-            config.keybinds.autofarm = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned AutoFarm: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "AntiAim Keybind",
-        CurrentKeybind = "L",
-        HoldToInteract = false,
-        Flag = "AntiAimKeybind",
-        Callback = function(Key)
-            config.keybinds.antiaim = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned AntiAim: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "Hitbox Keybind",
-        CurrentKeybind = "G",
-        HoldToInteract = false,
-        Flag = "HitboxKeybind",
-        Callback = function(Key)
-            config.keybinds.hitbox = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned Hitbox: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "ESP Keybind",
-        CurrentKeybind = "Z",
-        HoldToInteract = false,
-        Flag = "ESPKeybind",
-        Callback = function(Key)
-            config.keybinds.esp = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned ESP: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateKeybind({
-        Name = "Client Config Keybind",
-        CurrentKeybind = "V",
-        HoldToInteract = false,
-        Flag = "ClientConfigKeybind",
-        Callback = function(Key)
-            config.keybinds.client = normalizeKeyString(Key)
-            safeNotify({
-                Title = "Keybind", 
-                Content = "Assigned Client Config: "..tostring(normalizeKeyString(Key)), 
-                Length = 1, 
-                Image = "rbxassetid://4483362458"
-            })
-        end,
-    })
-
-    MainTab:CreateButton({
-        Name = "Partclaim (use if NPC mode isn't working well)",
+    
+    MainTab:Button({
+        Title = "Partclaim",
+        Desc = "Use if NPC mode isn't working well",
         Callback = function()
             pc()
             safeNotify({
@@ -3339,63 +3670,187 @@ local function makeui()
                 Image = "rbxassetid://4483362458",
                 BarColor = Color3.fromRGB(0, 255, 0)
             })
-        end,
+        end
     })
     
-    MainTab:CreateDropdown({
-        Name = "Align Part (Autofarm)",
-        Options = {"Head", "HumanoidRootPart"},
-        CurrentOption = "Head",
-        Flag = "AutoFarmAlignPart",
+    MainTab:Dropdown({
+        Title = "Align Part (Autofarm)",
+        Desc = "Part to align with crosshair",
+        List = {"Head", "HumanoidRootPart"},
+        Value = config.autoFarmTargetPart or "Head",
         Callback = function(Option)
             config.autoFarmTargetPart = Option
-        end,
+        end
     })
     
-    MainTab:CreateSlider({
-        Name = "GetPart (Partclaim)",
-        Range = {0, 1000},
-        Increment = 10,
-        Suffix = "",
-        CurrentValue = config.gp,
-        Flag = "GetPartValue",
-        Callback = function(Value)
-            config.gp = Value
-        end,
+    MainTab:Slider({
+        Title = "GetPart (Partclaim)",
+        Desc = "Part replication distance",
+        Min = 0,
+        Max = 1000,
+        Rounding = 10,
+        Value = config.gp or 200,
+        Callback = function(val)
+            config.gp = val
+        end
     })
     
-    MainTab:CreateSlider({
-        Name = "TP Distance (Autofarm)",
-        Range = {1, 100},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.autoFarmDistance,
-        Flag = "AutoFarmDistance",
-        Callback = function(Value)
-            config.autoFarmDistance = Value
-        end,
+    MainTab:Slider({
+        Title = "TP Distance (Autofarm)",
+        Desc = "Teleport distance for autofarm",
+        Min = 1,
+        Max = 100,
+        Rounding = 1,
+        Value = config.autoFarmDistance or 10,
+        Callback = function(val)
+            config.autoFarmDistance = val
+        end
     })
     
-    MainTab:CreateSlider({
-        Name = "Vertical Offset (Autofarm)",
-        Range = {-50, 50},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.autoFarmVerticalOffset,
-        Flag = "AutoFarmVerticalOffset",
-        Callback = function(Value)
-            config.autoFarmVerticalOffset = Value
-        end,
+    MainTab:Slider({
+        Title = "Vertical Offset (Autofarm)",
+        Desc = "Vertical offset for autofarm",
+        Min = -50,
+        Max = 50,
+        Rounding = 1,
+        Value = config.autoFarmVerticalOffset or 0,
+        Callback = function(val)
+            config.autoFarmVerticalOffset = val
+        end
     })
 
-    -- VisualsTab
-    VisualsTab:CreateToggle({
-        Name = "Toggle ESP (Ctrl+'Z')",
-        CurrentValue = false,
-        Flag = "EspTog",
-        Callback = function(state)
-            applyESPMaster(state)
-            if Value then
+    MainTab:Section({Title = "Keybinds [might not work well]"})
+
+    MainTab:Toggle({
+        Title = "Holdkey Toggle",
+        Desc = "[Re-Toggle When HK Type is Changed]",
+        Value = config.holdkeyToggle.enabled or false,
+        Callback = function(v)
+            config.holdkeyToggle.enabled = v
+            updateHoldkeyState()
+            if v then
+                safeNotify({
+                    Title = "Holdkey",
+                    Content = "Enabled - Hold " .. config.holdkeyToggle.modifier .. " + key to toggle",
+                    Length = 2,
+                    Image = "rbxassetid://4483362458",
+                    BarColor = Color3.fromRGB(0, 170, 255)
+                })
+            else
+                safeNotify({
+                    Title = "Holdkey",
+                    Content = "Disabled",
+                    Length = 1,
+                    Image = "rbxassetid://4483362458",
+                    BarColor = Color3.fromRGB(255, 0, 0)
+                })
+            end
+        end
+    })
+
+    MainTab:Dropdown({
+        Title = "Holdkey Type",
+        Desc = "Select modifier key for holdkey toggle",
+        List = {"RCtrl", "LCtrl", "RShift", "LShift"},
+        Value = config.holdkeyToggle.modifier or "RCtrl",
+        Callback = function(Option)
+            config.holdkeyToggle.modifier = Option
+            if config.holdkeyToggle.enabled then
+            end
+        end
+    })
+
+    local function createKeybindButton(name, defaultKey, configKey)
+        MainTab:Textbox({
+            Title = name .. " Keybind",
+            Desc = config.holdkeyToggle.enabled and 
+                   "Hold " .. config.holdkeyToggle.modifier .. " + press key then click set" or
+                   "Press the key then click set",
+            Placeholder = defaultKey,
+            Value = config.keybinds[configKey] or defaultKey,
+            ClearTextOnFocus = false,
+            Callback = function(text)
+                config.keybinds[configKey] = text:upper()
+                safeNotify({
+                    Title = "Keybind",
+                    Content = config.holdkeyToggle.enabled and 
+                             "Assigned " .. name .. ": " .. config.holdkeyToggle.modifier .. " + " .. text:upper() or
+                             "Assigned " .. name .. ": " .. text:upper(),
+                    Length = 1,
+                    Image = "rbxassetid://4483362458"
+                })
+            end
+        })
+    end
+
+    createKeybindButton("SilentAim", "E", "silentaim")
+    createKeybindButton("Aimbot", "Q", "aimbot")
+    createKeybindButton("AutoFarm", "F", "autofarm")
+    createKeybindButton("AntiAim", "L", "antiaim")
+    createKeybindButton("Hitbox", "G", "hitbox")
+    createKeybindButton("ESP", "Z", "esp")
+    createKeybindButton("Client Config", "V", "client")
+    createKeybindButton("SilentAim Wall Check", "B", "silentaimwallcheck")
+    createKeybindButton("Aimbot Wall Check", "H", "aimbotwallcheck")
+
+    MainTab:Section({Title = "Optimization"})
+    local CodeBlock = MainTab:Code({
+        Title = "Optimization [copy code and execute]",
+        Code = [[
+--  you adjust stuff here
+local Config = {
+    NETWORK_OPTIMIZATION = true,
+    REDUCE_REPLICATION = true,
+    THROTTLE_REMOTE_EVENTS = true,
+    OPTIMIZE_CHAT = true,
+    DISABLE_UNNECESSARY_GUI = true,
+    STREAMING_ENABLED = true,
+    REDUCE_PLAYER_REPLICATION_DISTANCE = 100,
+    THROTTLE_SOUNDS = true,
+    DESTROY_EMITTERS = true,
+    REMOVE_GRASS = true,
+    CORE = true,
+    FPS_MONITOR = true,
+    OPTIZ = true,
+    OPTIMIZATION_INTERVAL = 10,
+    MIN_INTERVAL = 3,
+    MAX_DISTANCE = 50,
+    PERFORMANCE_MONITORING = true,
+    FPS_THRESHOLD = 30,
+    GRAY_SKY_ENABLED = true,
+    GRAY_SKY_ID = "rbxassetid://114666145996289",
+    FULL_BRIGHT_ENABLED = true,
+    SMOOTH_PLASTIC_ENABLED = true,
+    COLLISION_GROUP_NAME = "OptimizedParts",
+    OPTIMIZE_PHYSICS = true,
+    DISABLE_CONSTRAINTS = true,
+    THROTTLE_PARTICLES = true,
+    THROTTLE_TEXTURES = true,
+    REMOVE_ANIMATIONS = true,
+    LOW_POLY_CONVERSION = true,
+    SELECTIVE_TEXTURE_REMOVAL = true,
+    PRESERVE_IMPORTANT_TEXTURES = true,
+    IMPORTANT_TEXTURE_KEYWORDS = {"sign", "ui", "hud", "menu", "button", "fence"},
+    QUALITY_LEVEL = 1,
+    FPS_CAP = 1000,
+    MEMORY_CLEANUP_THRESHOLD = 500,
+}
+
+local Optiz = loadstring(game:HttpGet('https://raw.githubusercontent.com/hm5650/Optiz/refs/heads/main/Optiz.lua'))()(OptizConfig)]]
+    })
+end
+
+-- Visuals Tab
+local VisualsTab = Window:Tab({Title = "Visuals", Icon = "eye"}) do
+    VisualsTab:Section({Title = "ESP Master"})
+    
+    VisualsTab:Toggle({
+        Title = "Toggle ESP ('Z')",
+        Desc = "Enable/disable all ESP features",
+        Value = config.espMasterEnabled or false,
+        Callback = function(v)
+            applyESPMaster(v)
+            if v then
                 safeNotify({
                     Title = "ESP Master",
                     Content = "ESP Enabled",
@@ -3414,776 +3869,612 @@ local function makeui()
                     BarColor = Color3.fromRGB(255, 0, 0)
                 })
             end
-        end,
-    })
-    local Divider = VisualsTab:CreateDivider()
-    VisualsTab:CreateToggle({
-        Name = "Toggle Highlight ESP",
-        CurrentValue = false,
-        Flag = "HighlightESP",
-        Callback = function(Value)
-            toggleHighlightESP(Value)
-            if Value then
-                safeNotify({
-                    Title = "Highlight ESP",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Highlight ESP",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
+        end
     })
     
-    VisualsTab:CreateToggle({
-        Name = "Toggle Text ESP",
-        CurrentValue = false,
-        Flag = "TextESP",
-        Callback = function(Value)
-            toggleTextESP(Value)
-            if Value then
-                safeNotify({
-                    Title = "Text ESP",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Text ESP",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
-    })
-
-    VisualsTab:CreateToggle({
-        Name = "Toggle Box ESP",
-        CurrentValue = false,
-        Flag = "BoxESP",
-        Callback = function(Value)
-            toggleBoxESP(Value)
-            if Value then
-                safeNotify({
-                    Title = "Box ESP",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Box ESP",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
-    })
-
-    VisualsTab:CreateToggle({
-        Name = "Toggle Health ESP",
-        CurrentValue = false,
-        Flag = "HealthESP",
-        Callback = function(Value)
-            toggleHealthESP(Value)
-            if Value then
-                safeNotify({
-                    Title = "Health ESP",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Health ESP",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
+    VisualsTab:Section({Title = "ESP Components"})
+    
+    VisualsTab:Toggle({
+        Title = "Toggle Highlight ESP",
+        Desc = "Enable player highlight",
+        Value = config.prefHighlightESP or false,
+        Callback = function(v)
+            toggleHighlightESP(v)
+        end
     })
     
-    VisualsTab:CreateToggle({
-        Name = "Toggle Head Dot ESP",
-        CurrentValue = false,
-        Flag = "HeadDotESP",
-        Callback = function(Value)
-            config.prefHeadDotESP = Value
+    VisualsTab:Toggle({
+        Title = "Toggle Text ESP",
+        Desc = "Show player names/health",
+        Value = config.prefTextESP or false,
+        Callback = function(v)
+            toggleTextESP(v)
+        end
+    })
+    
+    VisualsTab:Toggle({
+        Title = "Toggle Box ESP",
+        Desc = "Show bounding boxes",
+        Value = config.prefBoxESP or false,
+        Callback = function(v)
+            toggleBoxESP(v)
+        end
+    })
+    
+    VisualsTab:Toggle({
+        Title = "Toggle Health ESP",
+        Desc = "Show health bars",
+        Value = config.prefHealthESP or false,
+        Callback = function(v)
+            toggleHealthESP(v)
+        end
+    })
+    
+    VisualsTab:Toggle({
+        Title = "Toggle Head Dot ESP",
+        Desc = "Show head indicators",
+        Value = config.prefHeadDotESP or false,
+        Callback = function(v)
+            config.prefHeadDotESP = v
             if config.espMasterEnabled then
                 for _, target in ipairs(getAllTargets()) do
-                    if addesp(target) then
-                        if not config.espData[target] then
-                            makeesp(target)
-                        end
+                    if addesp(target) and not config.espData[target] then
+                        makeesp(target)
                     end
                 end
                 updateESPColors()
             end
-            if Value then
-                safeNotify({
-                    Title = "HeadDot ESP",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 200, 255)
-                })
-            else
-                safeNotify({
-                    Title = "HeadDot ESP",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
+        end
     })
     
-    VisualsTab:CreateToggle({
-        Name = "ESP Colour Based On Health",
-        CurrentValue = false,
-        Flag = "ESPColorByHealth",
-        Callback = function(Value)
-            config.prefColorByHealth = Value
-            updateESPColors()
-            if Value then
-                safeNotify({
-                    Title = "ESP Color By Health",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 200, 0)
-                })
-            else
-                safeNotify({
-                    Title = "ESP Color By Health",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(200, 0, 0)
-                })
-            end
-        end,
-    })
-
-    VisualsTab:CreateColorPicker({
-        Name = "ESP Colour",
-        Color = config.espc,
-        Flag = "ESPColor",
-        Callback = function(Color)
-            config.espc = Color
+    VisualsTab:Toggle({
+        Title = "ESP Colour Based On Health",
+        Desc = "Dynamic color based on health",
+        Value = config.prefColorByHealth or false,
+        Callback = function(v)
+            config.prefColorByHealth = v
             updateESPColors()
         end
     })
+end
 
-    VisualsTab:CreateColorPicker({
-        Name = "ESP Target Colour",
-        Color = config.esptargetc,
-        Flag = "ESPTargetColor",
-        Callback = function(Color)
-            config.esptargetc = Color
-            updateESPColors()
+-- AntiAim Tab
+local AntiAimTab = Window:Tab({Title = "AntiAim", Icon = "shield"}) do
+    AntiAimTab:Section({Title = "AntiAim Master"})
+    
+AntiAimTab:Toggle({
+    Title = "Toggle AntiAim ('L')",
+    Desc = "Enable/disable AntiAim",
+    Value = config.antiAimEnabled or false,
+    Callback = function(v)
+        config.antiAimEnabled = v
+        if not v then
+            returnToOriginalPosition()
+            safeNotify({
+                Title = "AntiAim",
+                Content = "Disabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(255, 0, 0)
+            })
+        else
+            safeNotify({
+                Title = "AntiAim",
+                Content = "Enabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(255, 100, 0)
+            })
+        end
+    end
+})
+    
+    AntiAimTab:Section({Title = "AntiAim Modes"})
+    
+    AntiAimTab:Toggle({
+        Title = "Raycast AntiAim",
+        Desc = "Teleport when targeted",
+        Value = config.raycastAntiAim or false,
+        Callback = function(v)
+            config.raycastAntiAim = v
+            if v then
+                config.antiAimAbovePlayer = false
+                config.antiAimBehindPlayer = false
+                config.antiAimOrbitEnabled = false
+            end
         end
     })
-
-    -- AntiAimTab
-    AntiAimTab:CreateToggle({
-        Name = "Toggle AntiAim (Ctrl+'L')",
-        CurrentValue = false,
-        Flag = "AntiAimToggle",
-        Callback = function(Value)
-            config.antiAimEnabled = Value
-            if not Value then
-                returnToOriginalPosition()
-                safeNotify({
-                    Title = "AntiAim",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            else
-                safeNotify({
-                    Title = "AntiAim",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 100, 0)
-                })
-            end
-        end,
-    })
-    local Divider = AntiAimTab:CreateDivider()
-    AntiAimTab:CreateToggle({
-        Name = "Raycast AntiAim",
-        CurrentValue = false,
-        Flag = "RaycastAntiAim",
-        Callback = function(Value)
-            config.raycastAntiAim = Value
-            if Value then
-                config.antiAimAbovePlayer = false
-                config.antiAimBehindPlayer = false
-                config.antiAimOrbitEnabled = false
-                safeNotify({
-                    Title = "Raycast AntiAim",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Raycast AntiAim",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
-    })
     
-    AntiAimTab:CreateToggle({
-        Name = "Above Player",
-        CurrentValue = false,
-        Flag = "AbovePlayerAntiAim",
-        Callback = function(Value)
-            config.antiAimAbovePlayer = Value
-            if Value then
+    AntiAimTab:Toggle({
+        Title = "Above Player",
+        Desc = "Teleport above target",
+        Value = config.antiAimAbovePlayer or false,
+        Callback = function(v)
+            config.antiAimAbovePlayer = v
+            if v then
                 config.raycastAntiAim = false
                 config.antiAimBehindPlayer = false
                 config.antiAimOrbitEnabled = false
-                safeNotify({
-                    Title = "Above Player",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
             else
                 returnToOriginalPosition()
-                safeNotify({
-                    Title = "Above Player",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
             end
-        end,
+        end
     })
     
-    AntiAimTab:CreateToggle({
-        Name = "Behind Player",
-        CurrentValue = false,
-        Flag = "BehindPlayerAntiAim",
-        Callback = function(Value)
-            config.antiAimBehindPlayer = Value
-            if Value then
+    AntiAimTab:Toggle({
+        Title = "Behind Player",
+        Desc = "Teleport behind target",
+        Value = config.antiAimBehindPlayer or false,
+        Callback = function(v)
+            config.antiAimBehindPlayer = v
+            if v then
                 config.raycastAntiAim = false
                 config.antiAimAbovePlayer = false
                 config.antiAimOrbitEnabled = false
-                safeNotify({
-                    Title = "Behind Player",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
             else
                 returnToOriginalPosition()
-                safeNotify({
-                    Title = "Behind Player",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
             end
-        end,
+        end
     })
-
-    AntiAimTab:CreateToggle({
-        Name = "Orbit Players",
-        CurrentValue = false,
-        Flag = "OrbitAntiAim",
-        Callback = function(Value)
-            config.antiAimOrbitEnabled = Value
-            if Value then
+    
+    AntiAimTab:Toggle({
+        Title = "Orbit Players",
+        Desc = "Orbit around nearest target",
+        Value = config.antiAimOrbitEnabled or false,
+        Callback = function(v)
+            config.antiAimOrbitEnabled = v
+            if v then
                 config.raycastAntiAim = false
                 config.antiAimAbovePlayer = false
                 config.antiAimBehindPlayer = false
                 if not config.antiAimEnabled then
                     config.antiAimEnabled = true
                 end
-                safeNotify({
-                    Title = "Orbit Players",
-                    Content = "Enabled - orbiting nearest target",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 2,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 200, 255)
-                })
             else
                 returnToOriginalPosition()
-                safeNotify({
-                    Title = "Orbit Players",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
             end
-        end,
+        end
     })
-
-    AntiAimTab:CreateDropdown({
-        Name = "GetTarget",
-        Options = {"Closest", "Lowest Health"},
-        CurrentOption = "Closest",
-        Flag = "AntiAimGetTarget",
+    
+    AntiAimTab:Section({Title = "AntiAim Settings"})
+    
+    AntiAimTab:Dropdown({
+        Title = "GetTarget",
+        Desc = "Target selection method",
+        List = {"Closest", "Lowest Health"},
+        Value = config.antiAimGetTarget or "Closest",
         Callback = function(Option)
             config.antiAimGetTarget = Option
-        end,
+        end
     })
-
-    AntiAimTab:CreateInput({
-        Name = "Teleport Distance (Raycast)",
-        CurrentValue = tostring(config.antiAimTPDistance),
-        PlaceholderText = "Enter Distance...",
-        RemoveTextAfterFocusLost = false,
-        Flag = "AntiAimTPDistance",
-        Callback = function(Text)
-            local n = tonumber(Text)
+    
+    AntiAimTab:Textbox({
+        Title = "Teleport Distance (Raycast)",
+        Desc = "Distance to teleport when targeted",
+        Placeholder = "3",
+        Value = tostring(config.antiAimTPDistance or 3),
+        ClearTextOnFocus = false,
+        Callback = function(text)
+            local n = tonumber(text)
             if n and n > 0 then
                 config.antiAimTPDistance = n
             end
-        end,
+        end
     })
     
-    AntiAimTab:CreateInput({
-        Name = "Above Height (Above Player)",
-        CurrentValue = tostring(config.antiAimAboveHeight),
-        PlaceholderText = "Enter Height...",
-        RemoveTextAfterFocusLost = false,
-        Flag = "AntiAimAboveHeight",
-        Callback = function(Text)
-            local n = tonumber(Text)
+    AntiAimTab:Textbox({
+        Title = "Above Height (Above Player)",
+        Desc = "Height above target",
+        Placeholder = "10",
+        Value = tostring(config.antiAimAboveHeight or 10),
+        ClearTextOnFocus = false,
+        Callback = function(text)
+            local n = tonumber(text)
             if n and n > 0 then
                 config.antiAimAboveHeight = n
             end
-        end,
+        end
     })
     
-    AntiAimTab:CreateInput({
-        Name = "Behind Distance (Behind Player)",
-        CurrentValue = tostring(config.antiAimBehindDistance),
-        PlaceholderText = "Enter Distance...",
-        RemoveTextAfterFocusLost = false,
-        Flag = "AntiAimBehindDistance",
-        Callback = function(Text)
-            local n = tonumber(Text)
+    AntiAimTab:Textbox({
+        Title = "Behind Distance (Behind Player)",
+        Desc = "Distance behind target",
+        Placeholder = "5",
+        Value = tostring(config.antiAimBehindDistance or 5),
+        ClearTextOnFocus = false,
+        Callback = function(text)
+            local n = tonumber(text)
             if n and n > 0 then
                 config.antiAimBehindDistance = n
             end
-        end,
+        end
     })
-
-    AntiAimTab:CreateInput({
-        Name = "Orbit Speed (Orbit)",
-        CurrentValue = tostring(config.antiAimOrbitSpeed),
-        PlaceholderText = "Angular speed multiplier",
-        RemoveTextAfterFocusLost = false,
-        Flag = "AntiAimOrbitSpeed",
-        Callback = function(Text)
-            local n = tonumber(Text)
+    
+    AntiAimTab:Textbox({
+        Title = "Orbit Speed (Orbit)",
+        Desc = "Angular speed multiplier",
+        Placeholder = "5",
+        Value = tostring(config.antiAimOrbitSpeed or 5),
+        ClearTextOnFocus = false,
+        Callback = function(text)
+            local n = tonumber(text)
             if n and n > 0 then
                 config.antiAimOrbitSpeed = n
             end
-        end,
+        end
     })
-
-    AntiAimTab:CreateInput({
-        Name = "Orbit Radius (Orbit)",
-        CurrentValue = tostring(config.antiAimOrbitRadius),
-        PlaceholderText = "Distance from target",
-        RemoveTextAfterFocusLost = false,
-        Flag = "AntiAimOrbitRadius",
-        Callback = function(Text)
-            local n = tonumber(Text)
+    
+    AntiAimTab:Textbox({
+        Title = "Orbit Radius (Orbit)",
+        Desc = "Distance from target",
+        Placeholder = "5",
+        Value = tostring(config.antiAimOrbitRadius or 5),
+        ClearTextOnFocus = false,
+        Callback = function(text)
+            local n = tonumber(text)
             if n and n >= 0 then
                 config.antiAimOrbitRadius = n
             end
-        end,
+        end
     })
-
-    AntiAimTab:CreateInput({
-        Name = "Orbit Height (Orbit)",
-        CurrentValue = tostring(config.antiAimOrbitHeight),
-        PlaceholderText = "Vertical offset",
-        RemoveTextAfterFocusLost = false,
-        Flag = "AntiAimOrbitHeight",
-        Callback = function(Text)
-            local n = tonumber(Text)
+    
+    AntiAimTab:Textbox({
+        Title = "Orbit Height (Orbit)",
+        Desc = "Vertical offset",
+        Placeholder = "0",
+        Value = tostring(config.antiAimOrbitHeight or 0),
+        ClearTextOnFocus = false,
+        Callback = function(text)
+            local n = tonumber(text)
             if n then
                 config.antiAimOrbitHeight = n
             end
-        end,
+        end
     })
+end
 
-    -- AimbotTab
-    AimbotTab:CreateToggle({
-        Name = "Toggle Aimbot (Ctrl+'Q')",
-        CurrentValue = false,
-        Flag = "AimbotToggle",
-        Callback = function(state)
-            handleAimbotToggle(state)
-            if Value then
-                safeNotify({
-                    Title = "Aimbot",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 255, 0)
-                })
-            else
-                safeNotify({
-                    Title = "Aimbot",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
-    })
-    local Divider = AimbotTab:CreateDivider()
-    AimbotTab:CreateToggle({
-        Name = "WallCheck AB (Ctrl+'B')",
-        CurrentValue = false,
-        Flag = "AimbotWallCheck",
-        Callback = function(Value)
-            config.aimbotWallCheck = Value
-            if Value then
-                safeNotify({
-                    Title = "Aimbot Wall Check",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Aimbot Wall Check",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
+-- Aimbot Tab
+local AimbotTab = Window:Tab({Title = "Aimbot", Icon = "crosshair"}) do
+    AimbotTab:Section({Title = "Aimbot Master"})
+    
+AimbotTab:Toggle({
+    Title = "Toggle Aimbot ('Q')",
+    Desc = "Enable/disable aimbot",
+    Value = config.aimbotEnabled or false,
+    Callback = function(v)
+        handleAimbotToggle(v)
+        if v then
+            safeNotify({
+                Title = "Aimbot",
+                Content = "Enabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(0, 255, 0)
+            })
+        else
+            safeNotify({
+                Title = "Aimbot",
+                Content = "Disabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(255, 0, 0)
+            })
+        end
+    end
+})
+    
+    AimbotTab:Section({Title = "Aimbot Settings"})
+    
+    AimbotTab:Toggle({
+        Title = "WallCheck AB ('B')",
+        Desc = "Check for walls",
+        Value = config.aimbotWallCheck or false,
+        Callback = function(v)
+            config.aimbotWallCheck = v
+        end
     })
     
-    AimbotTab:CreateToggle({
-        Name = "360° Aimbot",
-        CurrentValue = false,
-        Flag = "Aimbot360",
-        Callback = function(Value)
-            toggle360Aimbot(Value)
-        end,
+    AimbotTab:Toggle({
+        Title = "360° Aimbot",
+        Desc = "Target in all directions",
+        Value = config.aimbot360Enabled or false,
+        Callback = function(v)
+            toggle360Aimbot(v)
+        end
     })
-
-    AimbotTab:CreateDropdown({
-        Name = "Team Target",
-        Options = {"Enemies", "Teams", "All"},
-        CurrentOption = "Enemies",
-        Flag = "AimbotTeamTarget",
+    
+    AimbotTab:Dropdown({
+        Title = "Team Target",
+        Desc = "Select target team preference",
+        List = {"Enemies", "Teams", "All"},
+        Value = config.aimbotTeamTarget or "Enemies",
         Callback = function(Option)
-            if config.masterTeamTarget == "All" then
-                return
-            end
-            
+            if config.masterTeamTarget == "All" then return end
             config.aimbotTeamTarget = Option
             config.aimbotCurrentTarget = nil
             updateESPColors()
-            if config.aimbotTeamTarget == "All" then
-                config.masterTeamTarget = "All"
-                updateTeamTargetModes()
-            end
-        end,
+        end
     })
     
-    AimbotTab:CreateDropdown({
-        Name = "Target Part",
-        Options = {"Head", "HumanoidRootPart", "Torso"},
-        CurrentOption = "Head",
-        Flag = "AimbotTargetPart",
+    AimbotTab:Dropdown({
+        Title = "Target Part",
+        Desc = "Part to aim at",
+        List = {"Head", "HumanoidRootPart", "Torso"},
+        Value = config.aimbotTargetPart or "Head",
         Callback = function(Option)
             config.aimbotTargetPart = Option
-        end,
+        end
     })
     
-    AimbotTab:CreateDropdown({
-        Name = "GetTarget",
-        Options = {"Closest", "Lowest Health"},
-        CurrentOption = "Closest",
-        Flag = "AimbotGetTarget",
+    AimbotTab:Dropdown({
+        Title = "GetTarget",
+        Desc = "Target selection method",
+        List = {"Closest", "Lowest Health"},
+        Value = config.aimbotGetTarget or "Closest",
         Callback = function(Option)
             config.aimbotGetTarget = Option
-        end,
+        end
     })
     
-    AimbotTab:CreateSlider({
-        Name = "Aim Strength",
-        Range = {0, 1},
-        Increment = 0.1,
-        Suffix = "",
-        CurrentValue = config.aimbotStrength,
-        Flag = "AimbotStrength",
-        Callback = function(Value)
-            config.aimbotStrength = Value
-        end,
+    AimbotTab:Slider({
+        Title = "Aim Strength",
+        Desc = "Smoothing strength",
+        Min = 0,
+        Max = 1,
+        Rounding = 1,
+        Value = config.aimbotStrength or 0.5,
+        Callback = function(val)
+            config.aimbotStrength = val
+        end
     })
     
-    AimbotTab:CreateSlider({
-        Name = "FOV Size",
-        Range = {1, 500},
-        Increment = 10,
-        Suffix = "",
-        CurrentValue = config.aimbotFOVSize,
-        Flag = "AimbotFOVSize",
-        Callback = function(Value)
-            config.aimbotFOVSize = Value
+    AimbotTab:Slider({
+        Title = "FOV Size",
+        Desc = "Aimbot field of view",
+        Min = 1,
+        Max = 500,
+        Rounding = 10,
+        Value = config.aimbotFOVSize or 100,
+        Callback = function(val)
+            config.aimbotFOVSize = val
             updateAimbotFOVRing()
-        end,
+        end
     })
-    local Section = HitboxTab:CreateSection("[This might not work on every game]")
-    -- HitboxTab
-    HitboxTab:CreateToggle({
-        Name = "Toggle Hitbox (Ctrl+'G')",
-        CurrentValue = false,
-        Flag = "HitboxToggle",
-        Callback = function(Value)
-            config.hitboxEnabled = Value
-            if Value then
-                applyhb()
-                safeNotify({
-                    Title = "Hitbox Expander",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 255, 0)
-                })
-            else
-                local targetsToRemove = {}
-                for player, _ in pairs(config.hitboxExpandedParts) do
-                    table.insert(targetsToRemove, player)
-                end
-                for _, player in ipairs(targetsToRemove) do
-                    restoreTorso(player)
-                end
-                safeNotify({
-                    Title = "Hitbox Expander",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
+end
+
+-- Hitbox Tab
+local HitboxTab = Window:Tab({Title = "Hitbox", Icon = "box"}) do
+    HitboxTab:Section({Title = "Hitbox Master [This might not work on every game]"})
+    
+HitboxTab:Toggle({
+    Title = "Toggle Hitbox ('G')",
+    Desc = "Expand hitboxes",
+    Value = config.hitboxEnabled or false,
+    Callback = function(v)
+        config.hitboxEnabled = v
+        if v then
+            -- Force refresh all hitboxes
+            applyhb()
+            safeNotify({
+                Title = "Hitbox",
+                Content = config.smartHitboxEnabled and "Enabled with Smart Hitbox" or "Enabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(0, 255, 0)
+            })
+        else
+            -- Clear all hitboxes
+            for player, _ in pairs(config.hitboxExpandedParts) do
+                restoreTorso(player)
             end
-        end,
-    })
-    local Divider = HitboxTab:CreateDivider()
-    HitboxTab:CreateDropdown({
-        Name = "Team Target",
-        Options = {"Enemies", "Teams", "All"},
-        CurrentOption = "Enemies",
-        Flag = "HitboxTeamTarget",
+            config.hitboxExpandedParts = {}
+            safeNotify({
+                Title = "Hitbox",
+                Content = "Disabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(255, 0, 0)
+            })
+        end
+    end
+})
+    
+    HitboxTab:Section({Title = "Hitbox Settings"})
+    
+    HitboxTab:Dropdown({
+        Title = "Team Target",
+        Desc = "Select target team preference",
+        List = {"Enemies", "Teams", "All"},
+        Value = config.hitboxTeamTarget or "Enemies",
         Callback = function(Option)
-            if config.masterTeamTarget == "All" then
-                return
-            end
-            
+            if config.masterTeamTarget == "All" then return end
             config.hitboxTeamTarget = Option
             applyhb()
-            
-            if config.hitboxTeamTarget == "All" then
-                config.masterTeamTarget = "All"
-                updateTeamTargetModes()
-            end
-        end,
+        end
     })
-
-    HitboxTab:CreateSlider({
-        Name = "Hitbox Size",
-        Range = {1, 50},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.hitboxSize,
-        Flag = "HitboxSize",
-        Callback = function(Value)
-            config.hitboxSize = Value
+    
+    HitboxTab:Slider({
+        Title = "Hitbox Size",
+        Desc = "Size of expanded hitboxes",
+        Min = 1,
+        Max = 50,
+        Rounding = 1,
+        Value = config.hitboxSize or 10,
+        Callback = function(val)
+            config.hitboxSize = val
             if config.hitboxEnabled then
                 for player, data in pairs(config.hitboxExpandedParts) do
                     if player and targethb(player) and data and data.part and data.part.Parent then
-                        local newSize = Vector3.new(Value, Value, Value)
+                        local newSize = Vector3.new(val, val, val)
                         data.targetSize = newSize
-                        config.hitboxLastSize[player] = Value
+                        config.hitboxLastSize[player] = val
                         pcall(function()
                             data.part.Size = newSize
                         end)
                     end
                 end
             end
-        end,
+        end
     })
-    local Section = SilentAimTab:CreateSection("[This might not work on every game]")
-    SilentAimTab:CreateToggle({
-        Name = "Toggle SilentAim (Ctrl+'E')",
-        CurrentValue = false,
-        Flag = "SilentAimToggle",
-        Callback = function(Value)
-            config.startsa = Value
-            if not Value then
-                if gui.RingHolder then
-                    gui.RingHolder.Visible = false
-                end
-                local targetsToRemove = {}
-                for pl, _ in pairs(config.activeApplied) do
-                    table.insert(targetsToRemove, pl)
-                end
-                for _, pl in ipairs(targetsToRemove) do
-                    restorePartForPlayer(pl)
-                end
-                safeNotify({
-                    Title = "SilentAim",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            else
-                safeNotify({
-                    Title = "SilentAim",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 100, 0)
-                })
-                if gui.RingHolder then
-                    gui.RingHolder.Visible = true
-                end
-                lrfd()
-            end
-        end,
-    })
-    local Divider = SilentAimTab:CreateDivider()
-    SilentAimTab:CreateToggle({
-        Name = "WallCheck SA (B)",
-        CurrentValue = false,
-        Flag = "SilentAimWallCheck",
-        Callback = function(Value)
-            config.wallc = Value
-            if Value then
-                safeNotify({
-                    Title = "Wall Check",
-                    Content = "Enabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(0, 170, 255)
-                })
-            else
-                safeNotify({
-                    Title = "Wall Check",
-                    Content = "Disabled",
-                    Audio = "rbxassetid://17208361335",
-                    Length = 1,
-                    Image = "rbxassetid://4483362458",
-                    BarColor = Color3.fromRGB(255, 0, 0)
-                })
-            end
-        end,
-    })
+-- In the HitboxTab section, add these elements:
 
-    SilentAimTab:CreateDropdown({
-        Name = "Team Target",
-        Options = {"Enemies", "Teams", "All"},
-        CurrentOption = "Enemies",
-        Flag = "SilentAimTeamTarget",
+HitboxTab:Section({Title = "Smart Hitbox Settings"})
+HitboxTab:Toggle({
+    Title = "Smart Hitbox",
+    Desc = "Automatically adjusts hitbox size based on distance",
+    Value = config.smartHitboxEnabled or false,
+    Callback = function(v)
+        config.smartHitboxEnabled = v
+        if config.hitboxEnabled then
+            -- Force re-application of all hitboxes with new smart settings
+            for player, data in pairs(config.hitboxExpandedParts) do
+                if player and targethb(player) then
+                    local size = v and calculateSmartHitboxSize(player) or config.hitboxSize
+                    expandhb(player, size)
+                end
+            end
+        end
+    end
+})
+HitboxTab:Slider({
+    Title = "Smart Hitbox Distance Cap",
+    Desc = "Distance (studs) where size adjustment starts",
+    Min = 5,
+    Max = 100,
+    Rounding = 1,
+    Value = config.smartHitboxDistanceCap or 30,
+    Callback = function(val)
+        config.smartHitboxDistanceCap = val
+        if config.hitboxEnabled and config.smartHitboxEnabled then
+            applyhb()
+        end
+    end
+})
+
+HitboxTab:Slider({
+    Title = "Smart Hitbox Base Size",
+    Desc = "Default hitbox size at max distance",
+    Min = 1,
+    Max = 50,
+    Rounding = 1,
+    Value = config.smartHitboxBaseSize or 10,
+    Callback = function(val)
+        config.smartHitboxBaseSize = val
+        if config.hitboxEnabled and config.smartHitboxEnabled then
+            applyhb()
+        end
+    end
+})
+
+HitboxTab:Slider({
+    Title = "Smart Hitbox Min Size",
+    Desc = "Minimum size when very close",
+    Min = 1,
+    Max = 20,
+    Rounding = 1,
+    Value = config.smartHitboxMinSize or 2,
+    Callback = function(val)
+        config.smartHitboxMinSize = val
+        if config.hitboxEnabled and config.smartHitboxEnabled then
+            applyhb()
+        end
+    end
+})
+
+HitboxTab:Slider({
+    Title = "Smart Hitbox Max Size",
+    Desc = "Maximum size allowed",
+    Min = 5,
+    Max = 100,
+    Rounding = 1,
+    Value = config.smartHitboxMaxSize or 20,
+    Callback = function(val)
+        config.smartHitboxMaxSize = val
+        if config.hitboxEnabled and config.smartHitboxEnabled then
+            applyhb()
+        end
+    end
+})
+end
+
+-- SilentAim Tab
+local SilentAimTab = Window:Tab({Title = "SilentAim", Icon = "target"}) do
+    SilentAimTab:Section({Title = "SilentAim Master [This might not work on every game]"})
+    
+SilentAimTab:Toggle({
+    Title = "Toggle SilentAim ('E')",
+    Desc = "Enable/disable silent aim",
+    Value = config.startsa or false,
+    Callback = function(v)
+        config.startsa = v
+        if not v then
+            if gui.RingHolder then
+                gui.RingHolder.Visible = false
+            end
+            local targetsToRemove = {}
+            for pl, _ in pairs(config.activeApplied) do
+                table.insert(targetsToRemove, pl)
+            end
+            for _, pl in ipairs(targetsToRemove) do
+                restorePartForPlayer(pl)
+            end
+            safeNotify({
+                Title = "SilentAim",
+                Content = "Disabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(255, 0, 0)
+            })
+        else
+            if gui.RingHolder then
+                gui.RingHolder.Visible = true
+            end
+            safeNotify({
+                Title = "SilentAim",
+                Content = "Enabled",
+                Audio = "rbxassetid://17208361335",
+                Length = 1,
+                Image = "rbxassetid://4483362458",
+                BarColor = Color3.fromRGB(255, 100, 0)
+            })
+        end
+    end
+})
+    
+    SilentAimTab:Section({Title = "SilentAim Settings"})
+    
+    SilentAimTab:Toggle({
+        Title = "WallCheck SA (B)",
+        Desc = "Check for walls",
+        Value = config.wallc or false,
+        Callback = function(v)
+            config.wallc = v
+        end
+    })
+    
+    SilentAimTab:Dropdown({
+        Title = "Team Target",
+        Desc = "Select target team preference",
+        List = {"Enemies", "Teams", "All"},
+        Value = config.targetMode or "Enemies",
         Callback = function(Option)
-            if config.masterTeamTarget == "All" then
-                return
-            end
-            
-            if Option == "Enemies" then
-                config.targetMode = "Enemies"
-            elseif Option == "Teams" then
-                config.targetMode = "Teams"
-            elseif Option == "All" then
-                config.targetMode = "All"
-            else
-                config.targetMode = "Enemies"
-            end
-            
-            if config.targetMode == "All" then
-                config.masterTeamTarget = "All"
-                updateTeamTargetModes()
-            end
-        end,
+            if config.masterTeamTarget == "All" then return end
+            config.targetMode = Option
+        end
     })
-
-    SilentAimTab:CreateDropdown({
-        Name = "Target Part",
-        Options = {"Head", "HumanoidRootPart", "Both"},
-        CurrentOption = "Head",
-        Flag = "SilentAimTargetPart",
+    
+    SilentAimTab:Dropdown({
+        Title = "Target Part",
+        Desc = "Part to target",
+        List = {"Head", "HumanoidRootPart", "Both"},
+        Value = config.bodypart or "Head",
         Callback = function(Option)
             local targetsToRemove = {}
             for pl, _ in pairs(config.activeApplied) do
@@ -4192,73 +4483,72 @@ local function makeui()
             for _, pl in ipairs(targetsToRemove) do
                 restorePartForPlayer(pl)
             end
-            if Option == "Head" then
-                config.bodypart = "Head"
-            elseif Option == "HumanoidRootPart" then
-                config.bodypart = "HumanoidRootPart"
-            elseif Option == "Both" then
-                config.bodypart = "Both"
-            else
-                config.bodypart = "Head"
-            end
-        end,
+            config.bodypart = Option
+        end
     })
     
-    SilentAimTab:CreateDropdown({
-        Name = "GetTarget",
-        Options = {"Closest", "Lowest Health"},
-        CurrentOption = "Closest",
-        Flag = "SilentAimGetTarget",
+    SilentAimTab:Dropdown({
+        Title = "GetTarget",
+        Desc = "Target selection method",
+        List = {"Closest", "Lowest Health"},
+        Value = config.silentGetTarget or "Closest",
         Callback = function(Option)
             config.silentGetTarget = Option
-        end,
+        end
     })
     
-    SilentAimTab:CreateSlider({
-        Name = "HitChance",
-        Range = {0, 100},
-        Increment = 1,
+    SilentAimTab:Slider({
+        Title = "HitChance",
+        Desc = "Chance to hit target",
+        Min = 0,
+        Max = 100,
+        Rounding = 1,
         Suffix = "%",
-        CurrentValue = config.hitchance,
-        Flag = "HitChance",
-        Callback = function(Value)
-            config.hitchance = Value
-        end,
+        Value = config.hitchance or 100,
+        Callback = function(val)
+            config.hitchance = val
+        end
     })
     
-    SilentAimTab:CreateSlider({
-        Name = "FovSize",
-        Range = {1, 500},
-        Increment = 10,
-        Suffix = "",
-        CurrentValue = config.fovsize,
-        Flag = "FovSize",
-        Callback = function(Value)
-            config.fovsize = Value
+    SilentAimTab:Slider({
+        Title = "FovSize",
+        Desc = "Silent aim field of view",
+        Min = 1,
+        Max = 500,
+        Rounding = 10,
+        Value = config.fovsize or 120,
+        Callback = function(val)
+            config.fovsize = val
             if gui.RingHolder then
                 gui.RingHolder.Size = UDim2.new(0, math.max(8, config.fovsize * 2), 0, math.max(8, config.fovsize * 2))
             end
-        end,
+        end
     })
+end
 
-    -- ClientTab
-    ClientTab:CreateToggle({
-        Name = "Enable Client Configuration (Ctrl+'V')",
-        CurrentValue = false,
-        Flag = "ClientMasterToggle",
-        Callback = function(Value)
-            applyClientMaster(Value)
-        end,
+-- Client Tab
+local ClientTab = Window:Tab({Title = "Client", Icon = "user"}) do
+    ClientTab:Section({Title = "Client Master"})
+    
+    ClientTab:Toggle({
+        Title = "Enable Client Configuration ('V')",
+        Desc = "Enable/disable all client features",
+        Value = config.clientMasterEnabled or false,
+        Callback = function(v)
+            applyClientMaster(v)
+        end
     })
-    local Divider = ClientTab:CreateDivider()
-    ClientTab:CreateToggle({
-        Name = "Noclip",
-        CurrentValue = false,
-        Flag = "NoclipToggle",
-        Callback = function(Value)
-            config.clientNoclipEnabled = Value
+    
+    ClientTab:Section({Title = "Client Features"})
+    
+    ClientTab:Toggle({
+        Title = "Noclip",
+        Desc = "Walk through walls",
+        Value = config.clientNoclipEnabled or false,
+        Callback = function(v)
+            config.clientNoclipEnabled = v
             if config.clientMasterEnabled then
-                if Value then
+                if v then
                     startNoclip()
                     config.clientNoclip = true
                 else
@@ -4269,63 +4559,41 @@ local function makeui()
                 stopNoclip()
                 config.clientNoclip = false
             end
-        end,
+        end
     })
-
-    ClientTab:CreateToggle({
-        Name = "Enable WalkSpeed",
-        CurrentValue = false,
-        Flag = "WalkSpeedToggle",
-        Callback = function(Value)
-            config.clientWalkEnabled = Value
-            if config.clientMasterEnabled then
-                if Value then
-                    applyClientWalkSpeed(config.clientWalkSpeed or 16)
-                else
-                    if config.clientOriginals.WalkSpeed then
-                        local _, humanoid = safeGetCharacter()
-                        pcall(function() humanoid.WalkSpeed = config.clientOriginals.WalkSpeed end)
-                        config.clientOriginals.WalkSpeed = nil
-                    end
-                end
+    
+    ClientTab:Toggle({
+        Title = "Enable WalkSpeed",
+        Desc = "Custom walk speed",
+        Value = config.clientWalkEnabled or false,
+        Callback = function(v)
+            config.clientWalkEnabled = v
+            if config.clientMasterEnabled and v then
+                applyClientWalkSpeed(config.clientWalkSpeed or 16)
             end
-        end,
+        end
     })
-
-    ClientTab:CreateToggle({
-        Name = "Enable JumpPower",
-        CurrentValue = false,
-        Flag = "JumpPowerToggle",
-        Callback = function(Value)
-            config.clientJumpEnabled = Value
-            if config.clientMasterEnabled then
-                if Value then
-                    applyClientJumpPower(config.clientJumpPower or 50)
-                else
-                    if config.clientOriginals.JumpPower then
-                        local _, humanoid = safeGetCharacter()
-                        pcall(function()
-                            if humanoid.JumpPower ~= nil then
-                                humanoid.JumpPower = config.clientOriginals.JumpPower
-                            else
-                                humanoid.JumpHeight = config.clientOriginals.JumpPower
-                            end
-                        end)
-                        config.clientOriginals.JumpPower = nil
-                    end
-                end
+    
+    ClientTab:Toggle({
+        Title = "Enable JumpPower",
+        Desc = "Custom jump power",
+        Value = config.clientJumpEnabled or false,
+        Callback = function(v)
+            config.clientJumpEnabled = v
+            if config.clientMasterEnabled and v then
+                applyClientJumpPower(config.clientJumpPower or 50)
             end
-        end,
+        end
     })
-
-    ClientTab:CreateToggle({
-        Name = "CFrame Walk",
-        CurrentValue = false,
-        Flag = "CFrameWalkToggle",
-        Callback = function(Value)
-            config.clientCFrameWalkToggle = Value
+    
+    ClientTab:Toggle({
+        Title = "CFrame Walk",
+        Desc = "Smooth CFrame movement",
+        Value = config.clientCFrameWalkToggle or false,
+        Callback = function(v)
+            config.clientCFrameWalkToggle = v
             if config.clientMasterEnabled then
-                if Value then
+                if v then
                     TpWalkStart()
                     config.clientCFrameWalkEnabled = true
                 else
@@ -4336,99 +4604,114 @@ local function makeui()
                 TpWalkStop()
                 config.clientCFrameWalkEnabled = false
             end
-        end,
+        end
     })
     
-    ClientTab:CreateSlider({
-        Name = "WalkSpeed Value",
-        Range = {1, 500},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.clientWalkSpeed,
-        Flag = "WalkSpeedValue",
-        Callback = function(Value)
-            config.clientWalkSpeed = Value
+    ClientTab:Section({Title = "Client Values"})
+    
+    ClientTab:Slider({
+        Title = "WalkSpeed Value",
+        Desc = "Custom walk speed value",
+        Min = 1,
+        Max = 500,
+        Rounding = 1,
+        Value = config.clientWalkSpeed or 16,
+        Callback = function(val)
+            config.clientWalkSpeed = val
             if config.clientMasterEnabled and config.clientWalkEnabled then
-                applyClientWalkSpeed(Value)
+                applyClientWalkSpeed(val)
             end
-        end,
+        end
     })
-
-    ClientTab:CreateSlider({
-        Name = "JumpPower Value",
-        Range = {0, 500},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.clientJumpPower,
-        Flag = "JumpPowerValue",
-        Callback = function(Value)
-            config.clientJumpPower = Value
-            if config.clientMasterEnabled and config.clientJumpEnabled then
-                applyClientJumpPower(Value)
-            end
-        end,
-    })
-
-    ClientTab:CreateSlider({
-        Name = "CFrame Walk Speed",
-        Range = {1, 100},
-        Increment = 1,
-        Suffix = "",
-        CurrentValue = config.clientCFrameSpeed,
-        Flag = "CFrameWalkSpeed",
-        Callback = function(Value)
-            config.clientCFrameSpeed = Value
-        end,
-    })
-
-    -- Create FOV ring
-    local fovScreenGui = Instance.new("ScreenGui")
-    fovScreenGui.Name = "FOVToggleGui_Modern"
-    fovScreenGui.ResetOnSpawn = false
-    fovScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    fovScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
-
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(1, 0, 1, 0)
-    mainFrame.BackgroundTransparency = 1
-    mainFrame.Parent = fovScreenGui
-
-    local ringHolder = Instance.new("Frame")
-    ringHolder.Name = "RingHolder"
-    ringHolder.AnchorPoint = Vector2.new(0.5, 0.5)
-    ringHolder.Size = UDim2.new(0, config.fovsize * 2, 0, config.fovsize * 2)
-    ringHolder.Position = UDim2.new(0.5, 0, 0.5, -28)
-    ringHolder.BackgroundTransparency = 1
-    ringHolder.Parent = mainFrame
-
-    local ringCorner = Instance.new("UICorner")
-    ringCorner.CornerRadius = UDim.new(1, 0)
-    ringCorner.Parent = ringHolder
-
-    local ringStroke = Instance.new("UIStroke")
-    ringStroke.Thickness = 1
-    ringStroke.LineJoinMode = Enum.LineJoinMode.Round
-    ringStroke.Parent = ringHolder
-    ringStroke.Color = config.fovc or Color3.fromRGB(200, 200, 255)
-    ringStroke.Transparency = 0
-
-    gui.ScreenGui = fovScreenGui
-    gui.MainFrame = mainFrame
-    gui.RingHolder = ringHolder
-    gui.RingStroke = ringStroke
     
-    aimbotfov()
-    return Window
+    ClientTab:Slider({
+        Title = "JumpPower Value",
+        Desc = "Custom jump power value",
+        Min = 0,
+        Max = 500,
+        Rounding = 1,
+        Value = config.clientJumpPower or 50,
+        Callback = function(val)
+            config.clientJumpPower = val
+            if config.clientMasterEnabled and config.clientJumpEnabled then
+                applyClientJumpPower(val)
+            end
+        end
+    })
+    
+    ClientTab:Slider({
+        Title = "CFrame Walk Speed",
+        Desc = "CFrame movement speed",
+        Min = 1,
+        Max = 100,
+        Rounding = 1,
+        Value = config.clientCFrameSpeed or 1,
+        Callback = function(val)
+            config.clientCFrameSpeed = val
+        end
+    })
 end
+Window:Line()
+
+local fovScreenGui = Instance.new("ScreenGui")
+fovScreenGui.Name = "FOVToggleGui_Modern"
+fovScreenGui.ResetOnSpawn = false
+fovScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+fovScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(1, 0, 1, 0)
+mainFrame.BackgroundTransparency = 1
+mainFrame.Parent = fovScreenGui
+
+local ringHolder = Instance.new("Frame")
+ringHolder.Name = "RingHolder"
+ringHolder.AnchorPoint = Vector2.new(0.5, 0.5)
+ringHolder.Size = UDim2.new(0, config.fovsize * 2, 0, config.fovsize * 2)
+ringHolder.Position = UDim2.new(0.5, 0, 0.5, -28)
+ringHolder.BackgroundTransparency = 1
+ringHolder.Parent = mainFrame
+
+local ringCorner = Instance.new("UICorner")
+ringCorner.CornerRadius = UDim.new(1, 0)
+ringCorner.Parent = ringHolder
+
+local ringStroke = Instance.new("UIStroke")
+ringStroke.Thickness = 1
+ringStroke.LineJoinMode = Enum.LineJoinMode.Round
+ringStroke.Parent = ringHolder
+ringStroke.Color = config.fovc or Color3.fromRGB(200, 200, 255)
+ringStroke.Transparency = 0
+
+gui.ScreenGui = fovScreenGui
+gui.MainFrame = mainFrame
+gui.RingHolder = ringHolder
+gui.RingStroke = ringStroke
+aimbotfov()
+
+safeNotify({
+    Title = "Gravel.cc",
+    Content = "script made by hmmm5651\nyt: @gpsickle",
+    Audio = "rbxassetid://17208361335",
+    Length = 5,
+    Image = "rbxassetid://4483362458",
+    BarColor = Color3.fromRGB(0, 170, 255)
+})
 
 local function isCtrlDown()
-    return UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    local leftCtrl = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+    local rightCtrl = UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    return leftCtrl or rightCtrl
 end
 
--- FIXED: Enhanced initialization with proper ESP handling
+local function isShiftDown()
+    local leftShift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+    local rightShift = UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+    return leftShift or rightShift
+end
+
 local function init()
-    makeui()
     pc()
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= localPlayer then
@@ -4439,6 +4722,42 @@ local function init()
     Players.PlayerAdded:Connect(function(pl)
         if pl ~= localPlayer then
             setupPlayerListeners(pl)
+        end
+    end)
+    -- Handle existing players
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= localPlayer then
+            setupPlayerListeners(pl)
+            -- FIXED: Apply hitbox to existing players
+            if config.hitboxEnabled and targethb(pl) then
+                task.spawn(function()
+                    task.wait(0.5) -- Wait for character to load
+                    expandhb(pl, config.hitboxSize)
+                end)
+            end
+        end
+    end
+
+    -- Handle new players joining
+    Players.PlayerAdded:Connect(function(pl)
+        if pl ~= localPlayer then
+            setupPlayerListeners(pl)
+            
+            -- FIXED: Apply hitbox to new players
+            if config.hitboxEnabled then
+                pl.CharacterAdded:Connect(function(char)
+                    task.wait(0.5) -- Wait for character to fully load
+                    if targethb(pl) then
+                        expandhb(pl, config.hitboxSize)
+                    end
+                end)
+                
+                -- If player already has character
+                if pl.Character and targethb(pl) then
+                    task.wait(0.5)
+                    expandhb(pl, config.hitboxSize)
+                end
+            end
         end
     end)
     
@@ -4495,237 +4814,158 @@ local function init()
         if gameProcessed then return end
         local focused = UserInputService:GetFocusedTextBox()
         if focused then return end
-
         if input.UserInputType == Enum.UserInputType.Keyboard then
             local keyName = keyNameFromInput(input)
+            local kc = input.KeyCode
             if keyName then
-                local matched = applyKeybindAction(keyName)
+                local matched = applyKeybindAction(keyName, true)
                 if matched then return end
             end
-
-            local kc = input.KeyCode
-            if kc == Enum.KeyCode.B and not isCtrlDown() and not UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and not UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-                config.wallc = not config.wallc
-                if config.wallc then
-                    safeNotify({
-                        Title = "SilentAim Wall Check",
-                        Content = "Enabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 170, 255)
-                    })
-                else
-                    safeNotify({
-                        Title = "SilentAim Wall Check",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.Z and isCtrlDown() then
-                config.espMasterEnabled = not config.espMasterEnabled
-                applyESPMaster(config.espMasterEnabled)
-                if config.espMasterEnabled then
+            
+            if isCtrlDown() then
+                if kc == Enum.KeyCode.Z then
+                    config.espMasterEnabled = not config.espMasterEnabled
+                    applyESPMaster(config.espMasterEnabled)
                     safeNotify({
                         Title = "ESP Master",
-                        Content = "Enabled (Hotkey)",
+                        Content = config.espMasterEnabled and "Enabled (Hotkey)" or "Disabled (Hotkey)",
                         Audio = "rbxassetid://17208361335",
                         Length = 1,
                         Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 170, 255)
+                        BarColor = config.espMasterEnabled and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 0, 0)
                     })
-                else
-                    safeNotify({
-                        Title = "ESP Master",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.F and isCtrlDown() then
-                config.autoFarmEnabled = not config.autoFarmEnabled
-                if config.autoFarmEnabled then
-                    autoFarmProcess()
-                    safeNotify({
-                        Title = "AutoFarm",
-                        Content = "Enabled (Hotkey)" ..
-                                 "\nAligning " .. config.autoFarmTargetPart .. " to crosshair",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 3,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 255, 0)
-                    })
-                else
-                    stopAutoFarm()
-                    safeNotify({
-                        Title = "AutoFarm",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.E and isCtrlDown() then
-                config.startsa = not config.startsa
-                if not config.startsa then
-                    if gui.RingHolder then
-                        gui.RingHolder.Visible = false
+                elseif kc == Enum.KeyCode.F then
+                    config.autoFarmEnabled = not config.autoFarmEnabled
+                    if config.autoFarmEnabled then
+                        autoFarmProcess()
+                        safeNotify({
+                            Title = "AutoFarm",
+                            Content = "Enabled (Hotkey)\nAligning " .. config.autoFarmTargetPart .. " to crosshair",
+                            Audio = "rbxassetid://17208361335",
+                            Length = 3,
+                            Image = "rbxassetid://4483362458",
+                            BarColor = Color3.fromRGB(0, 255, 0)
+                        })
+                    else
+                        stopAutoFarm()
+                        safeNotify({
+                            Title = "AutoFarm",
+                            Content = "Disabled (Hotkey)",
+                            Audio = "rbxassetid://17208361335",
+                            Length = 1,
+                            Image = "rbxassetid://4483362458",
+                            BarColor = Color3.fromRGB(255, 0, 0)
+                        })
                     end
-                    local targetsToRemove = {}
-                    for pl, _ in pairs(config.activeApplied) do
-                        table.insert(targetsToRemove, pl)
+                elseif kc == Enum.KeyCode.E then
+                    config.startsa = not config.startsa
+                    if not config.startsa then
+                        if gui.RingHolder then gui.RingHolder.Visible = false end
+                        local targetsToRemove = {}
+                        for pl, _ in pairs(config.activeApplied) do
+                            table.insert(targetsToRemove, pl)
+                        end
+                        for _, pl in ipairs(targetsToRemove) do
+                            restorePartForPlayer(pl)
+                        end
+                        safeNotify({
+                            Title = "SilentAim",
+                            Content = "Disabled (Hotkey)",
+                            Audio = "rbxassetid://17208361335",
+                            Length = 1,
+                            Image = "rbxassetid://4483362458",
+                            BarColor = Color3.fromRGB(255, 0, 0)
+                        })
+                    else
+                        if gui.RingHolder then gui.RingHolder.Visible = true end
+                        lrfd()
+                        safeNotify({
+                            Title = "SilentAim",
+                            Content = "Enabled (Hotkey)",
+                            Audio = "rbxassetid://17208361335",
+                            Length = 1,
+                            Image = "rbxassetid://4483362458",
+                            BarColor = Color3.fromRGB(255, 100, 0)
+                        })
                     end
-                    for _, pl in ipairs(targetsToRemove) do
-                        restorePartForPlayer(pl)
-                    end
-                    safeNotify({
-                        Title = "SilentAim",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                else
-                    if gui.RingHolder then
-                        gui.RingHolder.Visible = true
-                    end
-                    lrfd()
-                    safeNotify({
-                        Title = "SilentAim",
-                        Content = "Enabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 100, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.Q and isCtrlDown() then
-                handleAimbotToggle(not config.aimbotEnabled)
-                if config.aimbotEnabled then
+                elseif kc == Enum.KeyCode.Q then
+                    handleAimbotToggle(not config.aimbotEnabled)
                     safeNotify({
                         Title = "Aimbot",
-                        Content = "Enabled (Hotkey)",
+                        Content = config.aimbotEnabled and "Enabled (Hotkey)" or "Disabled (Hotkey)",
                         Audio = "rbxassetid://17208361335",
                         Length = 1,
                         Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 255, 0)
+                        BarColor = config.aimbotEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
                     })
-                else
-                    safeNotify({
-                        Title = "Aimbot",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.B and isCtrlDown() then
-                config.aimbotWallCheck = not config.aimbotWallCheck
-                if config.aimbotWallCheck then
+                elseif kc == Enum.KeyCode.H then
+                    config.aimbotWallCheck = not config.aimbotWallCheck
                     safeNotify({
                         Title = "Aimbot Wall Check",
-                        Content = "Enabled (Hotkey)",
+                        Content = config.aimbotWallCheck and "Enabled (Hotkey)" or "Disabled (Hotkey)",
                         Audio = "rbxassetid://17208361335",
                         Length = 1,
                         Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 170, 255)
+                        BarColor = config.aimbotWallCheck and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 0, 0)
                     })
-                else
-                    safeNotify({
-                        Title = "Aimbot Wall Check",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.G and isCtrlDown() then
-                config.hitboxEnabled = not config.hitboxEnabled
-                if config.hitboxEnabled then
-                    applyhb()
-                    safeNotify({
-                        Title = "Hitbox Expander",
-                        Content = "Enabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 255, 0)
-                    })
-                else
-                    local targetsToRemove = {}
-                    for player, _ in pairs(config.hitboxExpandedParts) do
-                        table.insert(targetsToRemove, player)
+                elseif kc == Enum.KeyCode.G then
+                    config.hitboxEnabled = not config.hitboxEnabled
+                    if config.hitboxEnabled then
+                        applyhb()
+                        safeNotify({
+                            Title = "Hitbox",
+                            Content = "Enabled (Hotkey)",
+                            Audio = "rbxassetid://17208361335",
+                            Length = 1,
+                            Image = "rbxassetid://4483362458",
+                            BarColor = Color3.fromRGB(0, 255, 0)
+                        })
+                    else
+                        local targetsToRemove = {}
+                        for player, _ in pairs(config.hitboxExpandedParts) do
+                            table.insert(targetsToRemove, player)
+                        end
+                        for _, player in ipairs(targetsToRemove) do
+                            restoreTorso(player)
+                        end
+                        safeNotify({
+                            Title = "Hitbox",
+                            Content = "Disabled (Hotkey)",
+                            Audio = "rbxassetid://17208361335",
+                            Length = 1,
+                            Image = "rbxassetid://4483362458",
+                            BarColor = Color3.fromRGB(255, 0, 0)
+                        })
                     end
-                    for _, player in ipairs(targetsToRemove) do
-                        restoreTorso(player)
-                    end
-                    safeNotify({
-                        Title = "Hitbox Expander",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.V and isCtrlDown() then
-                config.clientMasterEnabled = not config.clientMasterEnabled
-                applyClientMaster(config.clientMasterEnabled)
-                if config.clientMasterEnabled then
+                elseif kc == Enum.KeyCode.V then
+                    config.clientMasterEnabled = not config.clientMasterEnabled
+                    applyClientMaster(config.clientMasterEnabled)
                     safeNotify({
                         Title = "Client Config",
-                        Content = "Enabled (Hotkey)",
+                        Content = config.clientMasterEnabled and "Enabled (Hotkey)" or "Disabled (Hotkey)",
                         Audio = "rbxassetid://17208361335",
                         Length = 1,
                         Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(0, 170, 255)
+                        BarColor = config.clientMasterEnabled and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 0, 0)
                     })
-                else
-                    safeNotify({
-                        Title = "Client Config",
-                        Content = "Disabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                end
-            elseif kc == Enum.KeyCode.L and isCtrlDown() then
-                config.antiAimEnabled = not config.antiAimEnabled
-                if not config.antiAimEnabled then
-                    returnToOriginalPosition()
+                elseif kc == Enum.KeyCode.L then
+                    config.antiAimEnabled = not config.antiAimEnabled
+                    if not config.antiAimEnabled then
+                        returnToOriginalPosition()
+                    end
                     safeNotify({
                         Title = "AntiAim",
-                        Content = "Disabled (Hotkey)",
+                        Content = config.antiAimEnabled and "Enabled (Hotkey)" or "Disabled (Hotkey)",
                         Audio = "rbxassetid://17208361335",
                         Length = 1,
                         Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 0, 0)
-                    })
-                else
-                    safeNotify({
-                        Title = "AntiAim",
-                        Content = "Enabled (Hotkey)",
-                        Audio = "rbxassetid://17208361335",
-                        Length = 1,
-                        Image = "rbxassetid://4483362458",
-                        BarColor = Color3.fromRGB(255, 100, 0)
+                        BarColor = config.antiAimEnabled and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(255, 0, 0)
                     })
                 end
             end
         end
     end)
 end
-
 local function cleanup()
     pcall(function()
         RunService:UnbindFromRenderStep("FOVhbUpdater_Modern")
@@ -4736,7 +4976,10 @@ local function cleanup()
         pcall(function() config.hotkeyConnection:Disconnect() end)
         config.hotkeyConnection = nil
     end
-
+    aimbot360LoopRunning = false
+    if aimbot360LoopTask then
+        aimbot360LoopTask = nil
+    end
     if config.aimbot360Enabled then
         toggle360Aimbot(false)
     end
@@ -4791,11 +5034,50 @@ local function cleanup()
     config.currentAntiAimTarget = nil
     config.hitboxExpandedParts = {}
     config.hitboxOriginalSizes = {}
+    config.holdkeyStates = {}
+    config.holdkeyToggle.enabled = false
     restoreClientValues()
 end
+
+
+task.spawn(function()
+    while patcher do
+        updatemobgui()
+        d()
+        espRefresher()
+        updatemobgui()
+        d()
+        espRefresher()  -- Add ESP refresher
+        updateSmartHitboxes()  -- Ensure smart hitboxes are updated
+        
+        -- Clean up orphaned hitboxes
+        local toRemove = {}
+        for player, data in pairs(config.hitboxExpandedParts) do
+            if not player or not getTargetCharacter(player) or not plralive(player) then
+                table.insert(toRemove, player)
+            elseif not targethb(player) then
+                table.insert(toRemove, player)
+            end
+        end
+        
+        for _, player in ipairs(toRemove) do
+            restoreTorso(player)
+        end
+        task.wait(0.2)
+    end
+end)
 
 init()
 
 return {
-    cleanup = cleanup
+    cleanup = cleanup,
+    toggle360Aimbot = toggle360Aimbot,
+    updatemobgui = updatemobgui,
+    applyKeybindAction = applyKeybindAction,
+    isHoldKeyDown = isHoldKeyDown,
+    canTriggerKeybind = canTriggerKeybind,
+    updateHoldkeyState = updateHoldkeyState,
+    isCtrlDown = isCtrlDown,
+    isShiftDown = isShiftDown
 }
+-- fin
