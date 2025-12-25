@@ -1,3 +1,4 @@
+
 -- Gravel.cc
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -35,6 +36,12 @@ local config = {
     prefColorByHealth = false,
     espMasterEnabled = false,
     prefHeadDotESP = false,
+    lineESPEnabled = false,
+    lineESPOnlyTarget = false,
+    lineStartPosition = "Center",
+    lineColor = Color3.fromRGB(255, 255, 255),
+    lineThickness = 1,
+    lineESPData = {},
     originalSizes = {},
     activeApplied = {},
     espData = {},
@@ -65,11 +72,6 @@ local config = {
     hitboxOriginalSizes = {},
     hitboxLastSize = {},
     hitboxColor = Color3.fromRGB(255, 255, 255),
-    smartHitboxEnabled = false,
-    smartHitboxDistanceCap = 30,
-    smartHitboxMinSize = 2,
-    smartHitboxMaxSize = 20,
-    smartHitboxBaseSize = 10,
     antiAimEnabled = false,
     raycastAntiAim = false,
     antiAimTPDistance = 3,
@@ -1681,14 +1683,8 @@ local function expandhb(targetPlayer, size)
 
     tnormalsize(targetPlayer)
     
-    -- Use smart hitbox calculation if enabled
-    local expansionSize
-    if config.smartHitboxEnabled then
-        local smartSize = calculateSmartHitboxSize(targetPlayer)
-        expansionSize = Vector3.new(smartSize, smartSize, smartSize)
-    else
-        expansionSize = Vector3.new(size, size, size)
-    end
+    -- Use regular size calculation (remove smart hitbox logic)
+    local expansionSize = Vector3.new(size, size, size)
     
     config.hitboxLastSize[targetPlayer] = size
 
@@ -1704,7 +1700,7 @@ local function expandhb(targetPlayer, size)
             torso.Size = expansionSize
             torso.Transparency = 0.9
             torso.CanCollide = false
-            torso.Massless = true
+            torso.Massless = false
             if config.hitboxColor then
                 torso.Color = config.hitboxColor
             else
@@ -1811,9 +1807,6 @@ local function applyhb()
     for _, target in ipairs(getAllTargets()) do  
         if targethb(target) then
             local size = config.hitboxSize
-            if config.smartHitboxEnabled then
-                size = calculateSmartHitboxSize(target)
-            end
             
             -- Only apply if not already applied or size changed
             local existing = config.hitboxExpandedParts[target]
@@ -1896,68 +1889,7 @@ local function handleHitboxForRespawnedPlayer(player)
         end
     end
 end
-local function calculateSmartHitboxSize(targetPlayer)
-    if not targetPlayer or targetPlayer == localPlayer then 
-        return config.hitboxSize 
-    end
-    
-    local localChar = localPlayer.Character
-    local targetChar = getTargetCharacter(targetPlayer)
-    if not localChar or not targetChar then 
-        return config.hitboxSize 
-    end
-    
-    local localRoot = localChar:FindFirstChild("HumanoidRootPart") or localChar:FindFirstChild("Head")
-    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Head")
-    if not localRoot or not targetRoot then 
-        return config.hitboxSize 
-    end
-    
-    -- Calculate distance
-    local distance = (localRoot.Position - targetRoot.Position).Magnitude
-    
-    -- Use different calculation based on distance
-    local adjustedSize
-    
-    if distance <= config.smartHitboxDistanceCap then
-        -- When within distance cap, scale from min to base size
-        local ratio = math.clamp(distance / config.smartHitboxDistanceCap, 0, 1)
-        adjustedSize = config.smartHitboxMinSize + (config.smartHitboxBaseSize - config.smartHitboxMinSize) * ratio
-        
-        -- Ensure minimum of 2 studs when very close (for consistency)
-        if distance < 5 then
-            adjustedSize = math.max(adjustedSize, 2)
-        end
-    else
-        -- When beyond distance cap, use base size
-        adjustedSize = config.smartHitboxBaseSize
-    end
-    
-    -- Clamp to min/max
-    adjustedSize = math.clamp(adjustedSize, config.smartHitboxMinSize, config.smartHitboxMaxSize)
-    
-    return adjustedSize
-end
 
-local function updateSmartHitboxes()
-    -- FIXED: Check if hitbox is enabled
-    if not config.hitboxEnabled or not config.smartHitboxEnabled then return end
-    
-    for player, data in pairs(config.hitboxExpandedParts) do
-        if player and plralive(player) and getTargetCharacter(player) and targethb(player) then
-            local newSize = calculateSmartHitboxSize(player)
-            if data.targetSize.X ~= newSize then
-                data.targetSize = Vector3.new(newSize, newSize, newSize)
-                local torso = getTargetCharacter(player):FindFirstChild("Torso") or getTargetCharacter(player):FindFirstChild("UpperTorso")
-                if torso then
-                    pcall(function()
-                        torso.Size = data.targetSize
-                    end)
-                end
-            end
-        end
-    end
-end
 
 local function shouldTargetAimbot(target)
     if not target then return false end
@@ -2319,7 +2251,6 @@ end
 RunService.Heartbeat:Connect(hb)
 RunService.RenderStepped:Connect(aimbotUpdate)
 RunService.Heartbeat:Connect(antiAimUpdate)
-RunService.Heartbeat:Connect(updateSmartHitboxes)
 
 local function isMobileDevice()
     local ok, val = pcall(function() return UserInputService.TouchEnabled end)
@@ -4261,7 +4192,7 @@ HitboxTab:Toggle({
             applyhb()
             safeNotify({
                 Title = "Hitbox",
-                Content = config.smartHitboxEnabled and "Enabled with Smart Hitbox" or "Enabled",
+                Content = "Enabled",
                 Audio = "rbxassetid://17208361335",
                 Length = 1,
                 Image = "rbxassetid://4483362458",
@@ -4322,85 +4253,6 @@ HitboxTab:Toggle({
             end
         end
     })
--- In the HitboxTab section, add these elements:
-
-HitboxTab:Section({Title = "Smart Hitbox Settings"})
-HitboxTab:Toggle({
-    Title = "Smart Hitbox",
-    Desc = "Automatically adjusts hitbox size based on distance",
-    Value = config.smartHitboxEnabled or false,
-    Callback = function(v)
-        config.smartHitboxEnabled = v
-        if config.hitboxEnabled then
-            -- Force re-application of all hitboxes with new smart settings
-            for player, data in pairs(config.hitboxExpandedParts) do
-                if player and targethb(player) then
-                    local size = v and calculateSmartHitboxSize(player) or config.hitboxSize
-                    expandhb(player, size)
-                end
-            end
-        end
-    end
-})
-HitboxTab:Slider({
-    Title = "Smart Hitbox Distance Cap",
-    Desc = "Distance (studs) where size adjustment starts",
-    Min = 5,
-    Max = 100,
-    Rounding = 1,
-    Value = config.smartHitboxDistanceCap or 30,
-    Callback = function(val)
-        config.smartHitboxDistanceCap = val
-        if config.hitboxEnabled and config.smartHitboxEnabled then
-            applyhb()
-        end
-    end
-})
-
-HitboxTab:Slider({
-    Title = "Smart Hitbox Base Size",
-    Desc = "Default hitbox size at max distance",
-    Min = 1,
-    Max = 50,
-    Rounding = 1,
-    Value = config.smartHitboxBaseSize or 10,
-    Callback = function(val)
-        config.smartHitboxBaseSize = val
-        if config.hitboxEnabled and config.smartHitboxEnabled then
-            applyhb()
-        end
-    end
-})
-
-HitboxTab:Slider({
-    Title = "Smart Hitbox Min Size",
-    Desc = "Minimum size when very close",
-    Min = 1,
-    Max = 20,
-    Rounding = 1,
-    Value = config.smartHitboxMinSize or 2,
-    Callback = function(val)
-        config.smartHitboxMinSize = val
-        if config.hitboxEnabled and config.smartHitboxEnabled then
-            applyhb()
-        end
-    end
-})
-
-HitboxTab:Slider({
-    Title = "Smart Hitbox Max Size",
-    Desc = "Maximum size allowed",
-    Min = 5,
-    Max = 100,
-    Rounding = 1,
-    Value = config.smartHitboxMaxSize or 20,
-    Callback = function(val)
-        config.smartHitboxMaxSize = val
-        if config.hitboxEnabled and config.smartHitboxEnabled then
-            applyhb()
-        end
-    end
-})
 end
 
 -- SilentAim Tab
@@ -5048,7 +4900,6 @@ task.spawn(function()
         updatemobgui()
         d()
         espRefresher()  -- Add ESP refresher
-        updateSmartHitboxes()  -- Ensure smart hitboxes are updated
         
         -- Clean up orphaned hitboxes
         local toRemove = {}
@@ -5081,3 +4932,4 @@ return {
     isShiftDown = isShiftDown
 }
 -- fin
+
